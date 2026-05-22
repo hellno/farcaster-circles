@@ -1,0 +1,17 @@
+{
+  "accountAssociation": {
+    "header": "TODO_SIGN_FOR_PROD_DOMAIN",
+    "payload": "TODO_SIGN_FOR_PROD_DOMAIN",
+    "signature": "TODO_SIGN_FOR_PROD_DOMAIN"
+  },
+  "frame": {
+    "version": "1",
+    "name": "Circles Onboard",
+    "iconUrl": "https://TODO/icon.png",
+    "homeUrl": "https://TODO",
+    "imageUrl": "https://TODO/og.png",
+    "buttonTitle": "Open Circles Onboard",
+    "splashImageUrl": "https://TODO/splash.png",
+    "splashBackgroundColor": "#0b0a14"
+  }
+}

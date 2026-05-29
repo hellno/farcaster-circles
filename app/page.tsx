@@ -1,7 +1,7 @@
-import { InviterApp } from "@/components/inviter-app";
+import { OnboardApp } from "@/components/onboard-app";
 
 export const dynamic = "force-dynamic";
 
 export default function Page() {
-  return <InviterApp />;
+  return <OnboardApp />;
 }

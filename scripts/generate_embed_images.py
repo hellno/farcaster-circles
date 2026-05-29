@@ -16,7 +16,7 @@ from pathlib import Path
 from PIL import Image
 from openai import OpenAI, BadRequestError
 
-PUBLIC_DIR = Path("/Users/hellno/dev/misc/circles_garage/miniapps/farcaster-circles/public")
+PUBLIC_DIR = Path(__file__).resolve().parent.parent / "public"
 OG_PATH = PUBLIC_DIR / "og.png"
 SPLASH_PATH = PUBLIC_DIR / "splash.png"
 

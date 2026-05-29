@@ -1,5 +1,6 @@
-export const MAX_INVITES_PER_BATCH = 5;
-export const MIN_SCORE = 0.7;
-export const CANDIDATES_CACHE_TTL_SEC = 300;
-export const SHORTCODE_LEN = 8;
 export const NEYNAR_BASE_URL = "https://api.neynar.com";
+
+// Free, keyless Farcaster hub (Snapchain HTTP API). Used as the primary source
+// for an fid's verified ETH addresses so onboarding does not depend on a
+// Neynar plan/quota. Neynar remains the fallback + the source for score/follow.
+export const FARCASTER_HUB_URL = "https://hub.pinata.cloud";

@@ -1,5 +1,16 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  serverExternalPackages: [
+    "@aboutcircles/sdk-invitations",
+    "@aboutcircles/sdk-types",
+    "@aboutcircles/sdk-utils",
+    "@aboutcircles/sdk-rpc",
+    "@aboutcircles/sdk-core",
+    "@aboutcircles/sdk-transfers",
+    "@aboutcircles/sdk-abis",
+    "@safe-global/protocol-kit",
+    "@safe-global/relay-kit",
+  ],
   images: {
     remotePatterns: [
       { protocol: "https", hostname: "imagedelivery.net" },

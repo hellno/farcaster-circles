@@ -12,12 +12,17 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@aboutcircles/sdk-invitations": "^0.1.41",
+    "@aboutcircles/sdk-types": "^0.1.41",
     "@farcaster/miniapp-sdk": "^0.3.0",
     "@farcaster/quick-auth": "^0.0.8",
     "@remixicon/react": "^4.9.0",
+    "@safe-global/protocol-kit": "^7.1.0",
+    "@safe-global/relay-kit": "^5.0.0",
     "@vercel/kv": "^3.0.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "ethers": "^6.16.0",
     "next": "16.1.7",
     "next-themes": "^0.4.6",
     "radix-ui": "^1.4.3",
@@ -26,6 +31,7 @@
     "shadcn": "^4.8.0",
     "tailwind-merge": "^3.6.0",
     "tw-animate-css": "^1.4.0",
+    "viem": "^2.50.4",
     "zod": "^4.4.3"
   },
   "devDependencies": {
@@ -33,8 +39,6 @@
     "@circles-sdk/sdk": "^0.29.2",
     "@eslint/eslintrc": "^3",
     "@safe-global/api-kit": "^4.1.0",
-    "@safe-global/protocol-kit": "^7.1.0",
-    "@safe-global/relay-kit": "^5.0.0",
     "@tailwindcss/postcss": "^4.2.1",
     "@types/node": "^25.5.0",
     "@types/react": "^19.2.14",
@@ -42,13 +46,11 @@
     "dotenv": "^17.4.2",
     "eslint": "^9.39.4",
     "eslint-config-next": "16.1.7",
-    "ethers": "^6.16.0",
     "postcss": "^8",
     "prettier": "^3.8.1",
     "prettier-plugin-tailwindcss": "^0.7.2",
     "tailwindcss": "^4.2.1",
     "tsx": "^4.22.3",
-    "typescript": "^5.9.3",
-    "viem": "^2.50.4"
+    "typescript": "^5.9.3"
   }
 }

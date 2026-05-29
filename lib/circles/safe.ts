@@ -19,7 +19,7 @@ import {
   INVITATION_MODULE,
   SAFE_4337_MODULE,
   SAFE_MODULE_SETUP,
-} from "@/lib/circles";
+} from "@/lib/circles/config";
 
 // keccak256 of a stable label so every onboard produces the same Safe address
 // for a given owner set. protocol-kit coerces this 0x-hex string to uint256.

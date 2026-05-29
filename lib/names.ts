@@ -1,3 +1,5 @@
+// [server · chain-neutral] ENS / basename reverse resolution. Server-only (RPC
+// keys) but domain-neutral — NOT part of farcaster/ identity or circles/ chain core.
 import "server-only";
 
 import {

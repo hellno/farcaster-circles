@@ -21,11 +21,10 @@ import {
   HOUSE_INVITER,
   INVITATION_FARM,
   HUB_V2,
-  getHubStatus,
-  getQuota,
   getInviteFarm,
-} from "../lib/circles";
-import { normalizeOwners, predictUserSafe } from "../lib/safe";
+} from "../lib/circles/config";
+import { getHubStatus, getQuota } from "../lib/circles/invite";
+import { normalizeOwners, predictUserSafe } from "../lib/circles/safe";
 
 const DECODE_ABI = parseAbi([
   "function claimInvite()",

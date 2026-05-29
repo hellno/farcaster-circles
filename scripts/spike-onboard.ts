@@ -7,13 +7,13 @@ loadEnv({ path: ".env" });
 import { type Address, type Hash, type Hex, zeroAddress } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 
-import { getHubStatus, getQuota, inviteSafe } from "../lib/circles";
+import { getHubStatus, getQuota, inviteSafe } from "../lib/circles/invite";
 import {
   assertSafeReady,
   deployUserSafe,
   normalizeOwners,
   predictUserSafe,
-} from "../lib/safe";
+} from "../lib/circles/safe";
 import { env } from "../lib/env";
 
 // --- tiny logging / link helpers (mirror spike-claim.ts conventions) ---

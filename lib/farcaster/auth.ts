@@ -2,7 +2,7 @@ import "server-only";
 
 import { createClient, Errors } from "@farcaster/quick-auth";
 
-import { env } from "./env";
+import { env } from "../env";
 
 const client = createClient();
 

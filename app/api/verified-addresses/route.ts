@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 
-import { verifyQuickAuth } from "@/lib/auth";
-import { fetchVerifiedEthAddresses } from "@/lib/neynar";
+import { verifyQuickAuth } from "@/lib/farcaster/auth";
+import { fetchVerifiedEthAddresses } from "@/lib/farcaster/neynar";
 import type {
   VerifiedAddressesErrorResponse,
   VerifiedAddressesResponse,

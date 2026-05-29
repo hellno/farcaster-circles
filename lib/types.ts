@@ -160,3 +160,34 @@ export interface DebugMeErrorResponse {
   error: "unauthorized" | "server_error";
   message: string;
 }
+
+// ---------- onboard service result union (D2) ----------
+
+/** The two route-level codes the SERVICE never emits (route owns auth + parse). */
+export type OnboardRouteErrorCode = "unauthorized" | "invalid_request";
+
+/** The codes the SERVICE (onboardAccount) can emit. Subset of OnboardErrorCode. */
+export type OnboardServiceErrorCode = Exclude<
+  OnboardErrorCode,
+  OnboardRouteErrorCode
+>;
+// = "gated" | "no_quota" | "deploy_failed" | "safe_not_ready"
+//   | "invite_failed" | "not_registered" | "server_error"
+
+export interface OnboardSuccess {
+  ok: true;
+  /** 200 success body, already shaped for the HTTP response. */
+  response: OnboardResponse;
+}
+
+export interface OnboardFailure {
+  ok: false;
+  code: OnboardServiceErrorCode;
+  message: string;
+  /** Present on invite_failed / not_registered (txs were broadcast). */
+  txHashes?: string[];
+  /** Debug payload built by the service (shared buildDebug). */
+  debug?: OnboardDebug;
+}
+
+export type OnboardOutcome = OnboardSuccess | OnboardFailure;

@@ -1,9 +1,10 @@
 import { NextResponse } from "next/server";
 
-import { verifyQuickAuth } from "@/lib/auth";
+import { verifyQuickAuth } from "@/lib/farcaster/auth";
 import { env } from "@/lib/env";
-import { evaluateGate, getSpamSignals, type GatePolicy } from "@/lib/gating";
-import { fetchUserProfile } from "@/lib/neynar";
+import { getSpamSignals } from "@/lib/farcaster/gating-signals";
+import { evaluateGate, type GatePolicy } from "@/lib/farcaster/gating-policy";
+import { fetchUserProfile } from "@/lib/farcaster/neynar";
 import type {
   DebugMeErrorResponse,
   DebugMeResponse,

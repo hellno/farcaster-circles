@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
-import { verifyQuickAuth } from "@/lib/auth";
+import { verifyQuickAuth } from "@/lib/farcaster/auth";
 import { resolveNames } from "@/lib/names";
 import type { NamesErrorResponse, NamesResponse } from "@/lib/types";
 

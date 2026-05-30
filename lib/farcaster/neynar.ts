@@ -3,8 +3,8 @@ import "server-only";
 import { getAddress, type Address } from "viem";
 
 import { FARCASTER_HUB_URL, NEYNAR_BASE_URL } from "./constants";
-import { env } from "./env";
-import type { NeynarProfile, UserSummary } from "./types";
+import { env } from "../env";
+import type { NeynarProfile, UserSummary } from "../types";
 
 // ---------- shape definitions ----------
 

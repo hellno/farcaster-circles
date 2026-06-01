@@ -242,6 +242,18 @@
     opacity: 0.55;
 }
 
+/* ---- keyboard focus: a visible ring on every interactive element ---------- */
+/* The offset places the ring on the paper ground, so cobalt stays legible
+   even on the gold CTA and the dark ink section bars. */
+.edition .block-btn:focus-visible,
+.edition .disclosure > summary:focus-visible,
+.edition details > summary:focus-visible,
+.edition a:focus-visible {
+    outline: 3px solid var(--cobalt);
+    outline-offset: 3px;
+    border-radius: 2px;
+}
+
 /* ---- circular checkbox (a mint-able coin slot) --------------------------- */
 .edition .sr-cb {
     position: absolute;

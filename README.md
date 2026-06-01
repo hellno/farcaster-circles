@@ -46,7 +46,7 @@ nothing; the backend does all the on-chain work.
 - `@aboutcircles/sdk-invitations` for the invite farm.
 - `@farcaster/miniapp-sdk` (client) + `@farcaster/quick-auth` (server JWT verify).
 - Neynar v2 for the fid's verified addresses and anti-spam signals.
-- Target chain: Gnosis (chain 100). Optional gasless deploy via Pimlico (ERC-4337).
+- Target chain: Gnosis (chain 100). The user's Safe enables the ERC-4337 module, but deploy gas is paid by the operator EOA; a sponsored gasless deploy via Pimlico is prototyped in `scripts/spike-claim.ts` and is not wired into the onboard flow.
 
 ## Environment variables
 
@@ -85,7 +85,7 @@ nothing; the backend does all the on-chain work.
 | `ONBOARD_ALLOWLIST_FIDS` | Comma-separated fids that always bypass the gate. |
 | `DEBUG_VIEWER_FID` | Operator's own fid; required for `mutual` gating and richer debug. |
 | `ONBOARD_DEBUG` | Set `true` to include the verbose debug payload in production responses. |
-| `PIMLICO_API_KEY`, `PIMLICO_SPONSORSHIP_POLICY_ID` | Optional. Sponsored gasless deploy (ERC-4337 stretch). |
+| `PIMLICO_API_KEY`, `PIMLICO_SPONSORSHIP_POLICY_ID` | Read by `lib/env.ts` for the gasless-deploy spike (`scripts/spike-claim.ts`). **Not used by the onboard flow**, which pays deploy gas from the operator EOA. |
 
 There is **no** `CIRCLES_MAGIC_LINK` and no Vercel KV. Those belonged to a removed
 earlier flow. Invite capacity now lives as on-chain quota on your inviter Safe

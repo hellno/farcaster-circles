@@ -13,8 +13,9 @@ Circles "human", all backend-side, with the user signing nothing.
   account is a Safe with two specific modules enabled. Docs:
   <https://docs.safe.global>.
 - **ERC-4337** is account abstraction. The user's Safe enables the Safe 4337
-  module so it can be operated as a smart account. (Gasless sponsored deploy via
-  Pimlico is an optional stretch; by default the operator EOA pays gas directly.)
+  module so it can be operated as a smart account. (A gasless sponsored deploy
+  via Pimlico was prototyped in `scripts/spike-claim.ts` but is **not** wired
+  into this flow; the operator EOA always pays the deploy gas.)
 
 ## The actors
 

@@ -147,7 +147,7 @@
     --sun: #f7a90a;
     --sun-deep: #e07b00;
     --cobalt: #2222cf;
-    --flame: #e8451f;
+    --flame: #c0320e;
     --leaf: #1f7a4d;
 
     position: relative;
@@ -450,7 +450,8 @@
     .edition .stamp,
     .edition .coin,
     .edition .spin,
-    .edition .marquee-track {
+    .edition .marquee-track,
+    .edition .animate-pulse {
         animation: none !important;
     }
     .edition .ring-ripple {

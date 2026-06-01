@@ -1,12 +1,26 @@
 import type { Metadata } from "next";
-import { Geist_Mono, Roboto } from "next/font/google";
+import {
+  Bricolage_Grotesque,
+  Hanken_Grotesk,
+  Space_Mono,
+} from "next/font/google";
 
 import "./globals.css";
 import { ThemeProvider } from "@/components/theme-provider";
 import { cn } from "@/lib/utils";
 
-const roboto = Roboto({ subsets: ["latin"], variable: "--font-sans" });
-const fontMono = Geist_Mono({ subsets: ["latin"], variable: "--font-mono" });
+// Editorial type system: a wonky display grotesque for mastheads, a clean
+// grotesque for body copy, and a typewriter mono for on-chain data / tickers.
+const fontDisplay = Bricolage_Grotesque({
+  subsets: ["latin"],
+  variable: "--font-display",
+});
+const fontSans = Hanken_Grotesk({ subsets: ["latin"], variable: "--font-sans" });
+const fontMono = Space_Mono({
+  subsets: ["latin"],
+  weight: ["400", "700"],
+  variable: "--font-mono",
+});
 
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "";
 
@@ -44,7 +58,13 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
     <html
       lang="en"
       suppressHydrationWarning
-      className={cn("antialiased", fontMono.variable, "font-sans", roboto.variable)}
+      className={cn(
+        "antialiased",
+        "font-sans",
+        fontDisplay.variable,
+        fontSans.variable,
+        fontMono.variable,
+      )}
     >
       <body>
         <ThemeProvider>{children}</ThemeProvider>

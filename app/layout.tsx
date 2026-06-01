@@ -26,11 +26,11 @@ const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "";
 
 export const metadata: Metadata = {
   title: "Circles Onboard",
-  description: "Invite your Farcaster mutuals to Circles in one tap.",
+  description: "Create your Circles account, gas-free, in one tap.",
   metadataBase: APP_URL ? new URL(APP_URL) : undefined,
   openGraph: {
     title: "Circles Onboard",
-    description: "Invite your Farcaster mutuals to Circles in one tap.",
+    description: "Create your Circles account, gas-free, in one tap.",
     images: APP_URL ? [`${APP_URL}/og.png`] : [],
   },
   other: APP_URL
@@ -45,7 +45,7 @@ export const metadata: Metadata = {
               name: "Circles Onboard",
               url: APP_URL,
               splashImageUrl: `${APP_URL}/splash.png`,
-              splashBackgroundColor: "#0b0a14",
+              splashBackgroundColor: "#f3e8cf",
             },
           },
         }),

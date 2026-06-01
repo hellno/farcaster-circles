@@ -89,11 +89,13 @@ async generateInvites(inviter: Address, invitees: Address[]): Promise<GenerateIn
 async getQuota(inviter: Address): Promise<bigint>   // == InvitationFarm.inviterQuota(inviter)
 ```
 
-`generateInvites(inviter, [invitee])` **builds** (does not send) two txs, executed **in order by the inviter**:
+`generateInvites(inviter, [invitee])` **builds** (does not send) two txs, which the inviter MUST execute **atomically in ONE Safe transaction** (see the atomicity caveat below):
 1. `claimTx` → `InvitationFarm.claimInvite()` — consumes 1 quota, yields a "bot" ERC-1155 token id.
 2. `transferTx` → `HubV2.safeTransferFrom(from=inviter, to=InvitationModule, id=botId, value=96e18, data=abi.encode(address invitee))`.
 
 On `transferTx`, the Hub calls `InvitationModule.onERC1155Received` (onlyHub), which makes the **invitee Safe self-call** `Hub.registerHuman(inviter, bytes32(0))` via `execTransactionFromModuleReturnData`, then trusts the invitee. **Net result: `isHuman(invitee) === true`.**
+
+**⚠️ Known failure mode — claim+transfer MUST be ONE atomic tx (root-caused on-chain 2026-05-30).** `claimInvite()` makes the allocated farm bot self-call `Hub.trust(inviter, expiry)` with **`expiry == the claim block's timestamp` → a 0-second TTL**, so the `bot → inviter` trust is valid ONLY within the claim block. `transferTx`'s `onERC1155Received` re-checks `isTrusted(bot, inviter)`; if `claimTx` and `transferTx` are sent as **separate** Safe txs (different blocks), that trust has expired and the Hub reverts `TrustRequired(bot, inviter)` (`0xff1f28fc`, surfaced by the Safe as `GS013`) — the invitee never registers, the request burns gas + 1 quota, and the poll times out (`502 not_registered`). The Circles app avoids this by batching both in one 4337 UserOp; we batch them via protocol-kit MultiSend (`execBatchAsInviterSafe`, `lib/circles/invite.ts`). **Do NOT execute the two txs in a per-tx loop.** Corollary: out-of-band, `isTrusted(bot, inviter)` always reads `false` (TTL=0) — never gate on it (it would false-negate every onboard). This is NOT a Circles-side trust gap and NOT a reason to use `personalMint`/own-CRC.
 
 **Hard precondition (on-chain enforced):** `enforceHumanRegistered()` calls `validateModuleEnabled(invitee)` and reverts `ModuleNotEnabled(invitee)` if `InvitationModule` is not enabled on the invitee Safe. This is the load-bearing requirement — the invitee Safe **must** have `0x00738aca…40B5` enabled *before* the invite, and **must not** already be a registered avatar (`Hub.avatars(invitee) == 0`).
 
@@ -270,6 +272,11 @@ Spike-grade: assertions live in the script, not a formal suite. Be honest about 
 - **`@circles-sdk/sdk@0.29.2` for the invite** — has only legacy `avatar.inviteHuman` (inviter pays from own CRC, no farm/quota pooling); **no `generateInvites`**. Must add `@aboutcircles/sdk` instead.
 - **`saltNonce = fid`** — user-rejected as too naive; use a namespaced constant (above).
 - **Assuming the FC wallet broadcasts to Gnosis** — keep a `getChains()` guard; verify before relying on it in M3.
+- **Splitting `claimTx` and `transferTx` into two Safe txs** — the original `inviteSafe` bug; `claimInvite`'s `bot → inviter` trust has a 0-second TTL so the second tx reverts `TrustRequired`/`GS013`. See the "Known failure mode" caveat under *The mechanism* — they MUST be one atomic MultiSend batch. (Root-caused on-chain 2026-05-30.)
+- **Pre-checking / gating on `isTrusted(bot, inviter)`** — reads `false` out-of-band for every healthy inviter (TTL=0), so it would false-negate every onboard. `preflightInvite` checks only quota + inviter-is-human.
+- **Reusing the house inviter's pre-created referral/distribution accounts** (the 10 `confirmed`/`inSession` Safes behind its slug) — each is owned solely by the WebAuthn shared signer `0xfD90…`, and `ReferralsModule` exposes only passkey `claimAccount` variants (no EOA `claimAccount`, no `swapOwner`/owner-transfer). Unclaimable from the Warpcast webview. Dead.
+- **`Invitations.generateInvite` (singular) as a "bot-gate bypass"** — only bypasses the farm when `getRealInviters(inviter)` is non-empty (humans who trust the inviter AND are trusted by the module); the house inviter `0xC3CC…` has none, so it falls back to the SAME `claimInvite` + `safeTransferFrom` pair with the identical atomicity requirement. Not a fix.
+- **`personalMint` / own-CRC (Model B / Hypothesis I) as the registration path** — works on-chain but is unnecessary now that claim+transfer is atomic; it needs the inviter to hold ≥96 of its own CRC and (for the two-call variant) the invitee Safe to sign `registerHuman`. Keep the prepaid-farm-quota path. Documented only as a fallback, not the plan.
 
 ## Open Questions / Risks to validate (ranked)
 1. **🟠 `bytes32(0)` registration of a non-Circles-deployed Safe** — registering with an empty digest is the *standard* path (profile is set separately afterward — see "Default profile from FC context"), so this is **likely fine**. The only residual unknown: a protocol-kit-deployed Safe never ran any Circles init — confirm the Hub/`InvitationModule` don't reject it. **Validate in M1** (the `isHuman` assertion catches it). Fallback if it does revert: a follow-up `NameRegistry.updateMetadataDigest` as the Safe. *(Downgraded from 🔴: the FC-profile-metadata plan resolves the "must set a digest" concern.)*

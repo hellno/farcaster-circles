@@ -18,6 +18,7 @@ export const STATUS: Record<OnboardErrorCode, number> = {
   invalid_request: 400,
   gated: 403,
   no_quota: 503,
+  inviter_unavailable: 503,
   deploy_failed: 500,
   safe_not_ready: 500,
   invite_failed: 500,

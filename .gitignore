@@ -44,6 +44,6 @@ circles-pool*.txt
 # vercel
 .vercel
 
-# planning / scratch (kept locally, not committed)
-/scripts/SPIKE-FINDINGS.md
-/scripts/CLAIM-PROBLEM.md
+# planning / scratch (kept locally, not committed) — archived 2026-05-30
+/docs/archive/SPIKE-FINDINGS.md
+/docs/archive/CLAIM-PROBLEM.md

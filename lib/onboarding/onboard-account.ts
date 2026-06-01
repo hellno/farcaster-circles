@@ -13,7 +13,7 @@ import {
   normalizeOwners,
   predictUserSafe,
 } from "@/lib/circles/safe";
-import { getHubStatus, getQuota, inviteSafe } from "@/lib/circles/invite";
+import { getHubStatus, inviteSafe, preflightInvite } from "@/lib/circles/invite";
 import type {
   NeynarProfile,
   OnboardDebug,
@@ -232,16 +232,29 @@ export async function onboardAccount(
       };
     }
 
-    // 6. Quota preflight.
-    const q = await getQuota();
-    quota = q.toString();
-    log(`house inviter quota: ${quota}`);
-    if (q === 0n) {
-      log("no quota — aborting");
+    // 6. Invite preflight (read-only) — runs BEFORE deploy so a doomed onboard
+    // costs no gas. Checks quota and that the inviter is a registered human.
+    const pf = await preflightInvite();
+    quota = pf.quota.toString();
+    log(
+      `preflight: ${pf.checks.map((c) => `${c.name}=${c.ok ? "OK" : "FAIL"}`).join(" ")}`,
+    );
+    if (!pf.ok) {
+      const failed = pf.failed!;
+      log(`preflight FAILED at ${failed.name}: ${failed.detail}`);
+      if (failed.name === "quota") {
+        return {
+          ok: false,
+          code: "no_quota",
+          message: "house inviter exhausted, request a new quota grant",
+          debug: localBuildDebug(),
+        };
+      }
       return {
         ok: false,
-        code: "no_quota",
-        message: "house inviter exhausted, request a new quota grant",
+        code: "inviter_unavailable",
+        message:
+          "onboarding is temporarily unavailable — the inviter can't issue invites right now",
         debug: localBuildDebug(),
       };
     }

@@ -9,6 +9,7 @@ describe("onboard route — STATUS map", () => {
     invalid_request: 400,
     gated: 403,
     no_quota: 503,
+    inviter_unavailable: 503,
     deploy_failed: 500,
     safe_not_ready: 500,
     invite_failed: 500,
@@ -23,8 +24,8 @@ describe("onboard route — STATUS map", () => {
   it("is exhaustive over the union (no missing or extra codes)", () => {
     const allCodes: OnboardErrorCode[] = [
       "unauthorized", "invalid_request", "gated", "no_quota",
-      "deploy_failed", "safe_not_ready", "invite_failed",
-      "not_registered", "server_error",
+      "inviter_unavailable", "deploy_failed", "safe_not_ready",
+      "invite_failed", "not_registered", "server_error",
     ];
     expect(Object.keys(STATUS).sort()).toEqual([...allCodes].sort());
     for (const code of allCodes) {

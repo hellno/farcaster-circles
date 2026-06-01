@@ -44,6 +44,47 @@ export async function getQuota(inviter?: Address): Promise<bigint> {
   return getInviteFarm().getQuota((inviter ?? HOUSE_INVITER) as Address);
 }
 
+export interface PreflightCheck {
+  name: "quota" | "inviter_human";
+  ok: boolean;
+  detail: string;
+}
+
+export interface PreflightResult {
+  ok: boolean;
+  quota: bigint;
+  checks: PreflightCheck[];
+  /** First failing check, or null when all pass. */
+  failed: PreflightCheck | null;
+}
+
+/**
+ * Read-only invite preconditions. Runs BEFORE the user's Safe is deployed so a
+ * doomed onboard costs ZERO gas and broadcasts nothing.
+ *
+ * Checks: quota > 0, and the inviter is a registered Circles human.
+ *
+ * NOTE: we deliberately do NOT pre-check `isTrusted(bot, inviter)`. `claimInvite`
+ * self-grants that trust with a 0-second TTL (expires in the claim block), so it
+ * reads `false` out-of-band for every healthy inviter — pre-checking it would
+ * false-negate every onboard. What actually makes the trust valid at transfer
+ * time is executing claim + transfer ATOMICALLY in one Safe tx; see `inviteSafe`.
+ */
+export async function preflightInvite(
+  inviter: Address = HOUSE_INVITER,
+): Promise<PreflightResult> {
+  const checks: PreflightCheck[] = [];
+
+  const quota = await getQuota(inviter);
+  checks.push({ name: "quota", ok: quota > 0n, detail: `quota=${quota.toString()}` });
+
+  const { isHuman } = await getHubStatus(inviter);
+  checks.push({ name: "inviter_human", ok: isHuman, detail: `isHuman=${isHuman}` });
+
+  const failed = checks.find((c) => !c.ok) ?? null;
+  return { ok: !failed, quota, checks, failed };
+}
+
 /**
  * Execute a single SDK-built transaction AS the house inviter Safe via
  * protocol-kit (sign + execute), then wait for its receipt. Returns the hash.
@@ -69,6 +110,43 @@ async function execAsInviterSafe(
   const safeTx = await kit.createTransaction({
     transactions: [{ to, value, data }],
   });
+  const signed = await kit.signTransaction(safeTx);
+  const res = await kit.executeTransaction(signed);
+  const hash = res.hash as Hash;
+
+  console.log(
+    `[inviteSafe] ${label} hash=${hash} https://gnosisscan.io/tx/${hash}`,
+  );
+
+  await getPublicClient().waitForTransactionReceipt({ hash });
+  return hash;
+}
+
+/**
+ * Execute MULTIPLE SDK-built transactions AS the house inviter Safe in ONE
+ * atomic Safe transaction (protocol-kit batches >1 tx via MultiSend). Required
+ * for the farm invite pair: `claimInvite` self-grants the `bot -> inviter` trust
+ * with a 0-second TTL (expiry == claim block timestamp), so the follow-up
+ * `safeTransferFrom` MUST run in the SAME block/tx or the Hub reverts
+ * `TrustRequired(bot, inviter)`. Returns the single tx hash.
+ */
+async function execBatchAsInviterSafe(
+  kit: Safe,
+  label: string,
+  txs: TransactionRequest[],
+): Promise<Hash> {
+  const transactions = txs.map((tx) => ({
+    to: tx.to,
+    value: (tx.value ?? 0n).toString(),
+    data: tx.data ?? "0x",
+  }));
+
+  console.log(
+    `[inviteSafe] ${label} atomic batch (${transactions.length} tx): ` +
+      transactions.map((t) => `${t.to}:${t.data.slice(0, 10)}`).join(", "),
+  );
+
+  const safeTx = await kit.createTransaction({ transactions });
   const signed = await kit.signTransaction(safeTx);
   const res = await kit.executeTransaction(signed);
   const hash = res.hash as Hash;
@@ -114,19 +192,34 @@ export async function ensureInviterSetup(): Promise<{ txHashes: Hash[] }> {
 }
 
 /**
- * Invite a Safe into Circles. Runs one-time inviter setup if needed, then
- * executes the invitation transactions AS the house inviter Safe, in order,
- * waiting for each receipt before the next.
+ * Invite an existing Safe into Circles via the house inviter's prepaid farm
+ * quota. Runs one-time inviter setup (idempotent), then executes the farm
+ * invitation transactions AS the house inviter Safe.
  *
- * Uses `Invitations.generateInvite(inviter, invitee)` — the SDK's path for "a
- * user who already has a Safe wallet but is NOT yet registered in the Hub",
- * which is exactly our case. It runs the pathfinder and routes 96 CRC through
- * trusted proxy inviters (an `operateFlowMatrix` flow the Hub permits).
+ * Uses `InviteFarm.generateInvites(inviter, [invitee])`, which returns
+ * `[claimTx, transferTx]`:
+ *   1. `claimInvite()` — consumes ONE prepaid quota unit, yielding a farm "bot"
+ *      ERC-1155 token AND self-granting `bot -> inviter` trust with a 0-second
+ *      TTL (valid only within the claim block).
+ *   2. `Hub.safeTransferFrom(inviter -> InvitationModule, botId, 96 CRC,
+ *      abi.encode(invitee))` — the Hub calls the module's `onERC1155Received`,
+ *      which (after re-checking `isTrusted(bot, inviter)`) makes the INVITEE Safe
+ *      self-call `registerHuman(inviter)` => `isHuman(invitee) === true`.
  *
- * Do NOT use the lower-level `InviteFarm.generateInvites` here: it builds a raw
- * farm bot-token `safeTransferFrom` that the Hub rejects with
- * `TrustRequired(bot, inviter)` when the inviter holds no own CRC and the bot
- * token isn't on a permitted trust flow into the module.
+ * CRITICAL: the two txs MUST run ATOMICALLY in ONE Safe transaction. The
+ * bot->inviter trust from step 1 has a 0-second TTL, so executing them as
+ * separate txs (different blocks) makes step 2 see expired trust and revert
+ * `TrustRequired(bot, inviter)` (`0xff1f28fc`, masked as Safe `GS013`). The
+ * Circles app batches them in one 4337 UserOp; we batch them via MultiSend
+ * (`execBatchAsInviterSafe`).
+ *
+ * The 96 CRC comes from PREPAID FARM QUOTA (the claimed bot token), not the
+ * inviter's own CRC — no `personalMint` needed; only `getQuota(inviter) > 0`.
+ *
+ * PRECONDITION: the invitee Safe MUST have the InvitationModule
+ * (`0x00738aca…`, == `farm.invitationModule()`) enabled so the module can
+ * self-call it. We enable it at Safe creation (`buildAccountConfig` /
+ * `ENABLE_MODULES_DATA` in `circles/safe.ts`).
  */
 export async function inviteSafe(
   safeAddr: Address,
@@ -135,9 +228,9 @@ export async function inviteSafe(
   // Idempotent (returns no txs once complete).
   const { txHashes: setupHashes } = await ensureInviterSetup();
 
-  const transactions = await getInvitations().generateInvite(
+  const { transactions } = await getInviteFarm().generateInvites(
     HOUSE_INVITER as Address,
-    safeAddr as Address,
+    [safeAddr as Address],
   );
 
   const kit = await Safe.init({
@@ -146,11 +239,9 @@ export async function inviteSafe(
     safeAddress: env.INVITER_SAFE_ADDRESS,
   });
 
-  const txHashes: Hash[] = [...setupHashes];
-  for (let i = 0; i < transactions.length; i++) {
-    // Execute sequentially, awaiting each receipt (later txs depend on earlier).
-    txHashes.push(await execAsInviterSafe(kit, `tx[${i}]`, transactions[i]));
-  }
+  // Claim + transfer in ONE atomic Safe tx — the bot->inviter trust has a
+  // 0-second TTL, so they cannot be split across blocks (see doc above).
+  const inviteHash = await execBatchAsInviterSafe(kit, "invite", transactions);
 
-  return { txHashes };
+  return { txHashes: [...setupHashes, inviteHash] };
 }

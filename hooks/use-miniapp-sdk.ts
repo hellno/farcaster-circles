@@ -51,7 +51,24 @@ export function useMiniappSdk(): MiniappState {
     async function init() {
       try {
         const { sdk } = await import("@farcaster/miniapp-sdk");
-        const context = await sdk.context;
+
+        // Detect the Farcaster host first. In a normal browser tab this is
+        // false, and the host-only calls below (context, quickAuth, wallet)
+        // would otherwise throw "Failed to fetch" / postMessage timeouts.
+        const inHost = await sdk.isInMiniApp();
+        if (!inHost) {
+          if (!cancelled) {
+            setState({ ...INITIAL_STATE, inHost: false, ready: true });
+          }
+          return;
+        }
+
+        let context: Awaited<typeof sdk.context> | null = null;
+        try {
+          context = await sdk.context;
+        } catch {
+          context = null;
+        }
         const ctxUser = context?.user;
         const fid = ctxUser?.fid ?? null;
         const user: MiniappUser | null = ctxUser
@@ -62,6 +79,31 @@ export function useMiniappSdk(): MiniappState {
             }
           : null;
 
+        if (cancelled) return;
+
+        // Paint the app and dismiss the host splash immediately. Do NOT block
+        // ready() on auth/wallet — if those hang or fail, the host would close
+        // the card before it ever shows.
+        setState({
+          fid,
+          token: null,
+          ready: false,
+          inHost: true,
+          error: null,
+          provider: null,
+          chains: null,
+          user,
+          contextRaw: context ?? null,
+        });
+
+        requestAnimationFrame(() => {
+          sdk.actions.ready().catch(() => {});
+          if (!cancelled) {
+            setState((prev) => ({ ...prev, ready: true }));
+          }
+        });
+
+        // Auth + wallet load in the background; each failure is non-fatal.
         let token: string | null = null;
         try {
           const result = await sdk.quickAuth.getToken();
@@ -88,37 +130,14 @@ export function useMiniappSdk(): MiniappState {
         }
 
         if (cancelled) return;
-
-        setState({
-          fid,
-          token,
-          ready: false,
-          inHost: true,
-          error: null,
-          provider,
-          chains,
-          user,
-          contextRaw: context ?? null,
-        });
-
-        requestAnimationFrame(() => {
-          sdk.actions.ready().catch(() => {});
-          if (!cancelled) {
-            setState((prev) => ({ ...prev, ready: true }));
-          }
-        });
+        setState((prev) => ({ ...prev, token, provider, chains }));
       } catch (err) {
         if (cancelled) return;
         setState({
-          fid: null,
-          token: null,
-          ready: false,
+          ...INITIAL_STATE,
           inHost: false,
+          ready: true,
           error: err instanceof Error ? err.message : "Failed to initialize Mini App SDK",
-          provider: null,
-          chains: null,
-          user: null,
-          contextRaw: null,
         });
       }
     }

@@ -5,8 +5,10 @@
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
-    --font-heading: var(--font-sans);
+    --font-heading: var(--font-display);
+    --font-display: var(--font-display);
     --font-sans: var(--font-sans);
+    --font-mono: var(--font-mono);
     --color-sidebar-ring: var(--sidebar-ring);
     --color-sidebar-border: var(--sidebar-border);
     --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -128,5 +130,338 @@
     }
   html {
     @apply font-sans;
+    }
+}
+
+/* ============================================================================
+   THE DAILY CIRCLE — bold editorial / playful theme for the onboarding flow.
+   Fully self-contained: explicit colors, independent of the host light/dark
+   theme, so the mini-app prints the same edition everywhere.
+   ============================================================================ */
+
+.edition {
+    --paper: #f3e8cf;
+    --paper-2: #ecdcb8;
+    --ink: #161009;
+    --ink-soft: #4a3f2c;
+    --sun: #f7a90a;
+    --sun-deep: #e07b00;
+    --cobalt: #2222cf;
+    --flame: #c0320e;
+    --leaf: #1f7a4d;
+
+    position: relative;
+    background-color: var(--paper);
+    color: var(--ink);
+    font-family: var(--font-sans);
+    /* faint halftone dot grid — newsprint texture */
+    background-image: radial-gradient(
+        rgba(22, 16, 9, 0.06) 0.7px,
+        transparent 0.7px
+    );
+    background-size: 6px 6px;
+    background-position: -1px -1px;
+    overflow-x: clip;
+}
+
+/* fractal-noise grain laid over everything for printed-paper tooth */
+.edition .grain {
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    pointer-events: none;
+    opacity: 0.05;
+    mix-blend-mode: multiply;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* ---- editorial type helpers ---------------------------------------------- */
+.edition .display {
+    font-family: var(--font-display);
+    font-weight: 800;
+    letter-spacing: -0.03em;
+    line-height: 0.92;
+}
+.edition .kicker {
+    font-family: var(--font-mono);
+    font-size: 0.6875rem;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+}
+.edition .mono {
+    font-family: var(--font-mono);
+}
+
+/* ---- panels & rules ------------------------------------------------------- */
+.edition .panel {
+    border: 2.5px solid var(--ink);
+    background: var(--paper);
+}
+.edition .panel-pop {
+    border: 2.5px solid var(--ink);
+    box-shadow: 5px 5px 0 0 var(--ink);
+}
+.edition .rule {
+    height: 0;
+    border: 0;
+    border-top: 2.5px solid var(--ink);
+}
+.edition .rule-thin {
+    border-top: 1.5px solid rgba(22, 16, 9, 0.35);
+}
+
+/* ---- color-block buttons (toy-like hard-shadow press) -------------------- */
+.edition .block-btn {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    border: 2.5px solid var(--ink);
+    box-shadow: 5px 5px 0 0 var(--ink);
+    font-family: var(--font-display);
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    transition:
+        transform 0.08s ease,
+        box-shadow 0.08s ease,
+        background-color 0.15s ease;
+    will-change: transform;
+}
+.edition .block-btn:not(:disabled):hover {
+    transform: translate(-1px, -1px);
+    box-shadow: 6px 6px 0 0 var(--ink);
+}
+.edition .block-btn:not(:disabled):active {
+    transform: translate(5px, 5px);
+    box-shadow: 0 0 0 0 var(--ink);
+}
+.edition .block-btn:disabled {
+    cursor: not-allowed;
+    box-shadow: 5px 5px 0 0 rgba(22, 16, 9, 0.3);
+    opacity: 0.55;
+}
+
+/* ---- keyboard focus: a visible ring on every interactive element ---------- */
+/* The offset places the ring on the paper ground, so cobalt stays legible
+   even on the gold CTA and the dark ink section bars. */
+.edition .block-btn:focus-visible,
+.edition .disclosure > summary:focus-visible,
+.edition details > summary:focus-visible,
+.edition a:focus-visible {
+    outline: 3px solid var(--cobalt);
+    outline-offset: 3px;
+    border-radius: 2px;
+}
+
+/* ---- circular checkbox (a mint-able coin slot) --------------------------- */
+.edition .sr-cb {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    opacity: 0;
+    pointer-events: none;
+}
+.edition .cb-box {
+    display: grid;
+    place-items: center;
+    width: 1.5rem;
+    height: 1.5rem;
+    flex: none;
+    border: 2.5px solid var(--ink);
+    border-radius: 9999px;
+    background: var(--paper);
+    transition:
+        background-color 0.12s ease,
+        transform 0.12s ease;
+}
+.edition .sr-cb:checked + .cb-box {
+    background: var(--sun);
+}
+.edition .sr-cb:checked + .cb-box::after {
+    content: "";
+    width: 0.6rem;
+    height: 0.6rem;
+    border-radius: 9999px;
+    background: var(--ink);
+}
+.edition .sr-cb:disabled + .cb-box {
+    opacity: 0.55;
+}
+.edition .sr-cb:not(:disabled):active + .cb-box {
+    transform: scale(0.88);
+}
+.edition .sr-cb:focus-visible + .cb-box {
+    outline: 2.5px solid var(--cobalt);
+    outline-offset: 2px;
+}
+
+/* ---- the coin + emanating currency ripples -------------------------------- */
+.edition .coin {
+    border: 3px solid var(--ink);
+    box-shadow: 6px 6px 0 0 var(--ink);
+    animation: coinPulse 4s ease-in-out infinite;
+}
+.edition .ring-ripple {
+    position: absolute;
+    inset: 0;
+    border: 2px solid var(--ink);
+    border-radius: 9999px;
+    opacity: 0;
+    animation: ripple 3.2s ease-out infinite;
+}
+.edition .ring-ripple.fast {
+    animation-duration: 1.3s;
+    border-color: var(--sun-deep);
+}
+
+/* ---- entrance stagger ----------------------------------------------------- */
+.edition .rise {
+    animation: rise 0.62s cubic-bezier(0.2, 0.75, 0.2, 1) both;
+}
+.edition .stamp {
+    animation: stampIn 0.55s cubic-bezier(0.2, 0.85, 0.3, 1) both;
+}
+
+/* ---- working spinner ring ------------------------------------------------- */
+.edition .spin {
+    animation: spin360 1.1s linear infinite;
+}
+
+/* ---- sticky action bar (primary tap always one reach away) --------------- */
+.edition .sticky-cta {
+    position: sticky;
+    bottom: 0;
+    z-index: 30;
+    padding-top: 0.85rem;
+    padding-bottom: 0.55rem;
+    background: linear-gradient(
+        to top,
+        var(--paper) 0%,
+        var(--paper) 64%,
+        transparent 100%
+    );
+}
+
+/* ---- collapsible disclosure (signer picker) ------------------------------ */
+.edition .disclosure > summary {
+    list-style: none;
+    cursor: pointer;
+}
+.edition .disclosure > summary::-webkit-details-marker {
+    display: none;
+}
+.edition .chev {
+    transition: transform 0.2s ease;
+}
+.edition .disclosure[open] .chev {
+    transform: rotate(180deg);
+}
+
+/* ---- minting: a printing-press shimmer sweeping the coin ----------------- */
+.edition .shimmer::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: 9999px;
+    background: linear-gradient(
+        115deg,
+        transparent 32%,
+        rgba(255, 255, 255, 0.55) 50%,
+        transparent 68%
+    );
+    background-size: 250% 100%;
+    animation: sweep 1.4s linear infinite;
+}
+@keyframes sweep {
+    from {
+        background-position: 200% 0;
+    }
+    to {
+        background-position: -80% 0;
+    }
+}
+
+/* ---- ticker marquee ------------------------------------------------------- */
+.edition .marquee-track {
+    display: inline-flex;
+    white-space: nowrap;
+    animation: marquee 18s linear infinite;
+}
+
+@keyframes rise {
+    from {
+        opacity: 0;
+        transform: translateY(16px);
+    }
+    to {
+        opacity: 1;
+        transform: none;
+    }
+}
+@keyframes ripple {
+    0% {
+        transform: scale(0.96);
+        opacity: 0.3;
+    }
+    100% {
+        transform: scale(1.4);
+        opacity: 0;
+    }
+}
+@keyframes spin360 {
+    to {
+        transform: rotate(360deg);
+    }
+}
+@keyframes coinPulse {
+    0%,
+    100% {
+        transform: translateY(0);
+    }
+    50% {
+        transform: translateY(-5px);
+    }
+}
+@keyframes stampIn {
+    0% {
+        opacity: 0;
+        transform: scale(1.7) rotate(-13deg);
+    }
+    55% {
+        opacity: 1;
+    }
+    100% {
+        opacity: 1;
+        transform: scale(1) rotate(-3.5deg);
+    }
+}
+@keyframes marquee {
+    from {
+        transform: translateX(0);
+    }
+    to {
+        transform: translateX(-50%);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .edition .rise,
+    .edition .stamp,
+    .edition .coin,
+    .edition .spin,
+    .edition .marquee-track,
+    .edition .animate-pulse {
+        animation: none !important;
+    }
+    .edition .ring-ripple {
+        display: none;
+    }
+    .edition .shimmer::after {
+        animation: none;
+        opacity: 0;
+    }
+    .edition .stamp {
+        transform: rotate(-3.5deg);
     }
 }

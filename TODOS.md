@@ -29,3 +29,12 @@ Deferred work, captured with enough context to pick up cold.
   3. **Status endpoint + reqId**: `/api/onboard` returns a `reqId` immediately and runs in the background; client polls `/api/onboard/status?reqId=…`. Adds shared state (KV/in-memory) — heavier.
   - Recommend option 2 (SSE with an `onStep` callback into `onboardAccount`) as the clean target; option 1 as a quick interim. Either way keep the final `OnboardOutcome` contract intact for non-streaming callers.
 - **Depends on / blocked by:** Nothing hard. Builds directly on the extracted `onboardAccount` flow (this refactor). Independent of the env/types splits above.
+- **Update (2026-06-01):** Option 1 (optimistic client stepper) is now shipped — the `MintingState` in `components/onboard-app.tsx` shows advancing milestones (Connecting → Deploying Safe → Registering human → Opening stream), an elapsed timer, and a "keep this open" reassurance, with the last milestone held until the server responds. Options 2 (SSE) / 3 (status endpoint) for *true* live progress remain open.
+
+## Design review — deferred items (from /design-review, 2026-06-01)
+- **Tokenize the type scale.** `components/onboard-app.tsx` mixes `text-[11–15px]` bracket values with Tailwind named sizes (`text-sm/base/lg`) for the same roles. Flagged cross-model (Codex + subagent). Maintainability, not user-facing — move to named size tokens.
+- **Centralize ink opacities.** `app/globals.css` hand-writes `rgba(22,16,9,0.06/0.30/0.35)` in the halftone grid, `.rule-thin`, and the disabled-button shadow. Derive from `--ink` via `color-mix(in oklch, var(--ink) N%, transparent)`.
+- **Sticky CTA vs footer.** The colophon + dev panel render after `.sticky-cta` in the same flex column, so the CTA lifts off the bottom at full scroll. Acceptable at one-viewport height; revisit (fixed bar / reorder) if the setup screen grows taller.
+- **Brand on first screen.** "Circles" only appears in body copy; the masthead puns ("The Daily Circle"). Consider a clearer Circles signal in the first viewport (taste call).
+- **"Mint Safe" jargon** in the step chip — consider plainer wording for non-crypto users.
+- **passkey-probe page polish.** `/passkey-probe` (dev tool) uses inline `#7c5cff` purple and sub-44px buttons, off the editorial system. Out of scope for the onboarding redesign; clean up if it ever ships to users.

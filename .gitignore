@@ -47,3 +47,4 @@ circles-pool*.txt
 # planning / scratch (kept locally, not committed) — archived 2026-05-30
 /docs/archive/SPIKE-FINDINGS.md
 /docs/archive/CLAIM-PROBLEM.md
+.gstack/

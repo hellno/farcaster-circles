@@ -79,31 +79,10 @@ export function useMiniappSdk(): MiniappState {
             }
           : null;
 
-        if (cancelled) return;
-
-        // Paint the app and dismiss the host splash immediately. Do NOT block
-        // ready() on auth/wallet — if those hang or fail, the host would close
-        // the card before it ever shows.
-        setState({
-          fid,
-          token: null,
-          ready: false,
-          inHost: true,
-          error: null,
-          provider: null,
-          chains: null,
-          user,
-          contextRaw: context ?? null,
-        });
-
-        requestAnimationFrame(() => {
-          sdk.actions.ready().catch(() => {});
-          if (!cancelled) {
-            setState((prev) => ({ ...prev, ready: true }));
-          }
-        });
-
-        // Auth + wallet load in the background; each failure is non-fatal.
+        // Resolve auth + wallet BEFORE revealing the app, so the primary
+        // button is already live when the host splash lifts (no disabled ->
+        // enabled flash). Each is guarded: a failure leaves it null but never
+        // aborts init, so ready() below still runs and the card always shows.
         let token: string | null = null;
         try {
           const result = await sdk.quickAuth.getToken();
@@ -120,17 +99,36 @@ export function useMiniappSdk(): MiniappState {
           provider = null;
         }
 
-        let chains: string[] | null = null;
+        if (cancelled) return;
+
+        setState({
+          fid,
+          token,
+          ready: false,
+          inHost: true,
+          error: null,
+          provider,
+          chains: null,
+          user,
+          contextRaw: context ?? null,
+        });
+
+        requestAnimationFrame(() => {
+          sdk.actions.ready().catch(() => {});
+          if (!cancelled) {
+            setState((prev) => ({ ...prev, ready: true }));
+          }
+        });
+
+        // Chains are debug-only; fetch them after the app is up.
         try {
           const getChains = (sdk as unknown as { getChains?: () => Promise<string[]> })
             .getChains;
-          chains = (await getChains?.()) ?? null;
+          const chains = (await getChains?.()) ?? null;
+          if (!cancelled) setState((prev) => ({ ...prev, chains }));
         } catch {
-          chains = null;
+          // Non-fatal: chains only feed the debug panel.
         }
-
-        if (cancelled) return;
-        setState((prev) => ({ ...prev, token, provider, chains }));
       } catch (err) {
         if (cancelled) return;
         setState({

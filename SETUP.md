@@ -1,65 +1,107 @@
 # Setup
 
-One-time steps before deploying or running anything serious.
+One-time steps to run your own instance. The app registers users by spending
+**on-chain invite quota** held by your inviter Safe, paying deploy gas from an
+operator EOA. You need both before anything works.
 
-## 1. Create a private GitHub repo
+New to the moving parts? Read [docs/circles-invite-and-safe.md](./docs/circles-invite-and-safe.md)
+first; it explains the inviter Safe, the farm quota, and the modules.
 
-`farcaster-circles` (or similar) under your account. Keep private until you've validated the flow end-to-end.
+## 1. Request invite quota from the Circles team
 
-## 2. Request invite quota from the Circles team
+This is the only step that can block you for days, so start it first. Message the
+Circles team on Telegram, along these lines:
 
-Send a Telegram message to the Circles team along these lines:
+> Hi, I'm building a Farcaster to Circles onboarding mini app. Could you grant
+> invite quota to my Circles inviter Safe at `0xYOUR_INVITER_SAFE`? Happy to
+> share the design.
 
-> Hi — I'm building a Farcaster→Circles onboarding miniapp.
-> Could you allocate ~50 invites against my Circles avatar at
-> `0xC3CCd9455b301D01d69DFB0b9Fc38Bee39829598`? Happy to share the miniapp design doc.
+The inviter Safe is the Circles avatar/Safe whose quota funds onboarding. If you
+do not have one yet, create a Circles account first and use that Safe address.
 
-This is the only step that can block you for days. Start it first.
+## 2. Provision the quota in the Invitations Manager
 
-## 3. Create a magic link in the Invitation Manager
+Once the team has assigned you quota, open the Invitations Manager:
 
-Once quota is granted, open the Circles Invitation Manager (linked from <https://app.aboutcircles.com>) and mint **one multi-claim magic link** with as many claims as your quota allows.
+<https://circles.gnosis.io/admin/invitations-manager>
 
-It looks like `https://circles.gnosis.io/invitation/{code}`.
+Create an invite allocation / distribution session for your inviter Safe. This is
+what puts the **on-chain farm quota** on the Safe. The app reads it directly via
+`getQuota(INVITER_SAFE_ADDRESS)` (see `lib/circles/invite.ts`); there is no link
+or token to copy into env. You can re-check remaining quota here anytime, and the
+onboard preflight returns `no_quota` when it runs dry.
 
-Copy it into `.env` / Vercel env vars as `CIRCLES_MAGIC_LINK`. **Do not commit it.** Anyone holding this URL can consume a claim.
+## 3. Set up the operator EOA
 
-## 4. Sign up for Neynar
+Create a dedicated EOA (a fresh private key) to act as the backend operator:
 
-Get a free API key at <https://dev.neynar.com>.
+- Put its key in `DEPLOYER_PK` (0x + 64 hex). It pays gas to deploy each user's Safe.
+- Fund it with a small amount of **xDAI** on Gnosis (deploys are cheap; top up as needed).
+- In the common case this same EOA owns the inviter Safe (threshold 1), so
+  `INVITER_OWNER_PK` defaults to `DEPLOYER_PK`. Set `INVITER_OWNER_PK` separately
+  only if a different key owns the inviter Safe.
 
-## 5. Set up Vercel
+Keep these keys in `.env.local` (gitignored) and your host's env vars. **Never
+commit them** — they control real funds and your invite quota.
 
-- Create a Vercel project linked to this repo.
-- Provision a Vercel KV instance.
-- Copy KV credentials into the project's env vars (`KV_REST_API_URL`, `KV_REST_API_TOKEN`).
-- Also set: `NEYNAR_API_KEY`, `FARCASTER_DOMAIN` (your prod domain), `NEXT_PUBLIC_APP_URL` (full URL), `CIRCLES_MAGIC_LINK` (from step 3).
+## 4. Point the app at your inviter Safe
 
-## 6. Sign the Farcaster manifest
+Set `INVITER_SAFE_ADDRESS` to your Safe from step 1. (It defaults to the
+project's house inviter, which you cannot spend.)
 
-Visit <https://miniapps.farcaster.xyz/docs/guides/publishing> and sign a manifest for your production domain. Replace the placeholder values in `public/.well-known/farcaster.json` with the signed `accountAssociation`. Commit the signed manifest.
+## 5. Sign up for Neynar
 
-**Re-sign if you change domains.** This trips people up.
+Get a free API key at <https://dev.neynar.com> and set `NEYNAR_API_KEY`. Used for
+the caller's verified addresses and the anti-spam signals.
 
-## 7. Validate the embed metadata
+## 6. RPCs (optional)
 
-Open the Farcaster preview tool, paste your `NEXT_PUBLIC_APP_URL`, and confirm the embed renders correctly.
+The public defaults in `lib/env.ts` work for testing. For real volume, set
+`GNOSIS_RPC_URL` (and optionally `CIRCLES_RPC_URL`, `ETH_RPC_URL`, `BASE_RPC_URL`)
+to private, rate-limit-safe endpoints.
 
-## 8. Run one real end-to-end invite
+## 7. Sign the Farcaster manifest
 
-The v1 success gate. Open the app from inside Warpcast, pick a real mutual, send the DM, have them redeem at `circles.gnosis.io`. Confirm they end up as a registered Circles human. Then verify the Invitation Manager shows one claim consumed.
+Visit <https://miniapps.farcaster.xyz/docs/guides/publishing> and sign a manifest
+for your production domain. Replace the `TODO_SIGN_FOR_PROD_DOMAIN` placeholders
+in `public/.well-known/farcaster.json` with the signed `accountAssociation`, and
+fill in the real `iconUrl` / `homeUrl` / `imageUrl` / `splashImageUrl`. Set
+`FARCASTER_DOMAIN` to that exact domain. Commit the signed manifest.
 
-## 9. Watch the magic link's remaining claims
+**Re-sign if you change domains.** A `FARCASTER_DOMAIN` that does not match the
+manifest is the usual cause of `401`s.
 
-The miniapp does **not** know how many claims your magic link has left. Check the Invitation Manager periodically and mint a new link / update `CIRCLES_MAGIC_LINK` if it runs dry.
+## 8. Validate the embed
 
-## 10. Make the repo public (optional)
+Open the Farcaster preview tool, paste your `NEXT_PUBLIC_APP_URL`, and confirm the
+launch button + splash render.
 
-Once #8 succeeds, you can flip the repo to public if you want others to fork it.
+## 9. One real end-to-end onboard
+
+The success gate: open the app inside a Farcaster client, tap **Create my
+account**, and confirm you end up with a live Safe and `isHuman ✅` without
+leaving the app. Then check the Invitations Manager shows one unit of quota
+consumed.
+
+## 10. (Optional) anti-spam gate
+
+Leave `ONBOARD_GATE=off` while testing. To restrict who can onboard, set a policy
+(`powerBadge` / `mutual` / ...) and put your own fid in `DEBUG_VIEWER_FID`. Add
+trusted fids to `ONBOARD_ALLOWLIST_FIDS` to always allow them.
 
 ## Troubleshooting
 
-- **Splash never dismisses** — `sdk.actions.ready()` not called or called before first paint. Check `hooks/use-miniapp-sdk.ts`.
-- **`401 unauthorized` on /assign** — Quick Auth JWT not making it through, or `FARCASTER_DOMAIN` mismatch with the signed manifest. They must match exactly.
-- **`500 server_misconfigured`** — `CIRCLES_MAGIC_LINK` is unset or not a `https://circles.gnosis.io/invitation/...` URL.
-- **`429 rate_limited`** — Neynar tier exceeded. Wait or upgrade.
+- **Splash never dismisses** — `sdk.actions.ready()` not called (init threw before
+  it). Check `hooks/use-miniapp-sdk.ts`. See [the mini app guide](./docs/farcaster-mini-app.md).
+- **`401 unauthorized`** — Quick Auth JWT missing, or `FARCASTER_DOMAIN` does not
+  match the signed manifest. They must match exactly.
+- **`403 gated`** — the caller failed `ONBOARD_GATE`. Set `off` or allowlist them.
+- **`503 no_quota`** — your inviter Safe is out of quota. Provision more in the
+  Invitations Manager (step 2).
+- **`503 inviter_unavailable`** — the inviter Safe is not a registered Circles
+  human, or preflight failed. Make sure it is a real Circles account.
+- **`500 deploy_failed` / `safe_not_ready`** — usually the operator EOA is out of
+  xDAI, or an RPC issue. Fund it / switch RPC.
+- **`502 not_registered`** — the invite txs sent but `isHuman` did not flip in
+  time. Check the tx on gnosisscan; a `TrustRequired` / `GS013` revert means the
+  claim+transfer did not run atomically (see `lib/circles/invite.ts`).

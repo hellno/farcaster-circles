@@ -130,6 +130,7 @@ export type OnboardErrorCode =
   | "invalid_request"
   | "gated"
   | "no_quota"
+  | "inviter_unavailable"
   | "deploy_failed"
   | "safe_not_ready"
   | "invite_failed"

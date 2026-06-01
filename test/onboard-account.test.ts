@@ -29,8 +29,19 @@ vi.mock("@/lib/circles/safe", () => ({
 vi.mock("@/lib/circles/invite", () => ({
   getHubStatus: vi.fn(),
   getQuota: vi.fn(),
+  preflightInvite: vi.fn(),
   inviteSafe: vi.fn(async () => ({ txHashes: [] })),
 }));
+
+const PREFLIGHT_OK = {
+  ok: true,
+  quota: 5n,
+  checks: [
+    { name: "quota", ok: true, detail: "quota=5" },
+    { name: "inviter_human", ok: true, detail: "isHuman=true" },
+  ],
+  failed: null,
+};
 
 import { onboardAccount } from "@/lib/onboarding/onboard-account";
 import * as neynar from "@/lib/farcaster/neynar";
@@ -55,6 +66,7 @@ beforeEach(() => {
   (signalsMod.getSpamSignals as any).mockResolvedValue(spam());
   (neynar.fetchVerifiedEthAddresses as any).mockResolvedValue([VERIFIED]);
   (invite.getQuota as any).mockResolvedValue(5n);
+  (invite.preflightInvite as any).mockResolvedValue(PREFLIGHT_OK);
   (invite.getHubStatus as any).mockResolvedValue({ isHuman: false, avatar: "0x" + "0".repeat(40) });
 });
 
@@ -120,11 +132,34 @@ describe("onboardAccount — outcomes (chain layer mocked)", () => {
     process.env.ONBOARD_GATE = "off";
   });
 
-  it("no_quota when getQuota returns 0n", async () => {
-    (invite.getQuota as any).mockResolvedValue(0n);
+  it("no_quota when the preflight quota check fails", async () => {
+    (invite.preflightInvite as any).mockResolvedValue({
+      ok: false,
+      quota: 0n,
+      checks: [{ name: "quota", ok: false, detail: "quota=0" }],
+      failed: { name: "quota", ok: false, detail: "quota=0" },
+    });
     const out = await onboardAccount(base);
     expect(out.ok).toBe(false);
     if (!out.ok) expect(out.code).toBe("no_quota");
+    expect(safeMod.deployUserSafe).not.toHaveBeenCalled();
+  });
+
+  it("inviter_unavailable when the inviter is not a registered human — fails BEFORE any deploy", async () => {
+    (invite.preflightInvite as any).mockResolvedValue({
+      ok: false,
+      quota: 98n,
+      checks: [
+        { name: "quota", ok: true, detail: "quota=98" },
+        { name: "inviter_human", ok: false, detail: "isHuman=false" },
+      ],
+      failed: { name: "inviter_human", ok: false, detail: "isHuman=false" },
+    });
+    const out = await onboardAccount(base);
+    expect(out.ok).toBe(false);
+    if (!out.ok) expect(out.code).toBe("inviter_unavailable");
+    expect(safeMod.deployUserSafe).not.toHaveBeenCalled();
+    expect(invite.inviteSafe).not.toHaveBeenCalled();
   });
 
   it("already-human returns ok with alreadyRegistered=true and spends no quota", async () => {

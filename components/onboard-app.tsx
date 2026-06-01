@@ -441,7 +441,7 @@ export function OnboardApp() {
                     <span className="display text-lg leading-none text-[var(--ink)]">
                       {s.n}
                     </span>
-                    <span className="text-[12px] font-semibold leading-tight">
+                    <span className="min-h-[2.5em] text-[12px] font-semibold leading-tight text-balance">
                       {s.label}
                     </span>
                   </div>

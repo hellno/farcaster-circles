@@ -431,16 +431,14 @@ export function OnboardApp() {
 
             {/* What happens — compact three-step strip */}
             <div className="rise" style={{ animationDelay: "130ms" }}>
-              <span className="kicker text-[var(--ink-soft)]">
-                What happens →
-              </span>
+              <h2 className="kicker text-[var(--ink-soft)]">What happens →</h2>
               <div className="mt-1.5 grid grid-cols-3 gap-2">
                 {STEPS.map((s) => (
                   <div
                     key={s.n}
                     className="panel flex flex-col gap-0.5 px-2.5 py-2"
                   >
-                    <span className="display text-lg leading-none text-[var(--sun-deep)]">
+                    <span className="display text-lg leading-none text-[var(--ink)]">
                       {s.n}
                     </span>
                     <span className="text-[12px] font-semibold leading-tight">
@@ -453,11 +451,13 @@ export function OnboardApp() {
 
             {/* Keyholders — collapsed by default; most people never edit it */}
             <details className="disclosure panel rise" style={{ animationDelay: "180ms" }}>
-              <summary className="flex items-center justify-between bg-[var(--ink)] px-3.5 py-2.5">
+              <summary className="flex min-h-[44px] items-center justify-between bg-[var(--ink)] px-3.5 py-2.5">
                 <span className="kicker text-[var(--paper)]">Signers</span>
                 <span className="flex items-center gap-2">
                   <span className="kicker rounded-full bg-[var(--sun)] px-2 py-0.5 text-[var(--ink)]">
-                    {selectedCount} selected
+                    {verifiedAddrs.length > 0
+                      ? `Wallet + ${selectedCount - 1} verified`
+                      : "Wallet only"}
                   </span>
                   <span className="chev text-[var(--paper)]" aria-hidden>
                     ▾
@@ -718,8 +718,8 @@ function MintingState({
         Writing to Gnosis. This usually takes 15–30 seconds.
       </p>
 
-      {/* live milestone ledger */}
-      <ol className="panel mt-6">
+      {/* live milestone ledger — announced to screen readers as it advances */}
+      <ol className="panel mt-6" role="status" aria-live="polite">
         {MINT_MILESTONES.map((m, i) => {
           const done = i < current;
           const active = i === current;
@@ -790,13 +790,14 @@ function CoinMark({ busy, pfpUrl }: { busy: boolean; pfpUrl: string | null }) {
         style={{ animationDelay: "2.1s" }}
         aria-hidden
       />
-      <div className="coin relative grid h-26 w-26 place-items-center overflow-hidden rounded-full bg-[var(--sun)]">
+      <div className="coin relative grid h-28 w-28 place-items-center overflow-hidden rounded-full bg-[var(--sun)]">
         <CirclesGlyph />
         {pfpUrl ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img
             src={pfpUrl}
             alt=""
+            decoding="async"
             referrerPolicy="no-referrer"
             onError={(e) => {
               e.currentTarget.style.display = "none";
@@ -873,7 +874,11 @@ function NoticeBlock({
 }) {
   const bg = tone === "cobalt" ? "bg-[var(--cobalt)]" : "bg-[var(--flame)]";
   return (
-    <div className="panel-pop rise" style={{ animationDelay: delay }}>
+    <div
+      className="panel-pop rise"
+      style={{ animationDelay: delay }}
+      role={tone === "flame" ? "alert" : "status"}
+    >
       <div className={cn("kicker px-3.5 py-2 text-[var(--paper)]", bg)}>
         {label}
       </div>

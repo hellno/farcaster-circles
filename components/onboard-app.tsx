@@ -19,7 +19,7 @@ const DEBUG_ENABLED = process.env.NODE_ENV !== "production";
 
 // Compact "what happens" strip — kept to three taps-of-the-eye chips.
 const STEPS = [
-  { n: "01", label: "Mint Safe" },
+  { n: "01", label: "Create wallet" },
   { n: "02", label: "Verify human" },
   { n: "03", label: "Earn daily" },
 ] as const;
@@ -29,9 +29,9 @@ const STEPS = [
 // server actually responds — honest-ish, and it keeps people from leaving.
 const MINT_MILESTONES = [
   "Connecting your wallet",
-  "Deploying your Safe",
-  "Registering you as human",
-  "Opening your Circles stream",
+  "Creating your smart wallet",
+  "Verifying you're human",
+  "Starting your Circles",
 ] as const;
 
 function gnosisScanAddress(address: string): string {
@@ -257,10 +257,10 @@ export function OnboardApp() {
     verifiedAddrs.filter((a) => selected[a.toLowerCase()]).length;
 
   const doneStatus = result?.alreadyRegistered
-    ? "Already a human on Circles."
+    ? "You're already on Circles."
     : result?.isHuman
-      ? "Registered as a human on Circles."
-      : "Your Safe is live on Gnosis.";
+      ? "You're verified as a human on Circles."
+      : "Your account is live on Gnosis.";
 
   const certified = !!(result?.alreadyRegistered || result?.isHuman);
 
@@ -273,9 +273,12 @@ export function OnboardApp() {
         {!busy ? (
           <header className="rise" style={{ animationDelay: "0ms" }}>
             <div className="kicker flex items-center justify-between text-[var(--ink-soft)]">
-              <span>The Daily Circle</span>
-              <span aria-hidden>✶</span>
-              <span>{sdk.fid != null ? `No. ${sdk.fid}` : "Edition I"}</span>
+              <span>Circles</span>
+              {sdk.user?.username ? (
+                <span style={{ textTransform: "none" }}>
+                  @{sdk.user.username}
+                </span>
+              ) : null}
             </div>
 
             <hr className="rule mt-2.5" />
@@ -292,33 +295,25 @@ export function OnboardApp() {
             </h1>
 
             <p className="mt-3 max-w-[34ch] text-[14px] leading-snug text-[var(--ink-soft)]">
-              Personal currency for humans — a fresh stream of money, minted just
-              by being you. Set up your account, gas-free, in one tap.
+              Personal currency for humans. Set up your account, gas-free, in
+              one tap.
             </p>
 
-            <div className="kicker mt-3 flex items-center gap-2 text-[var(--ink-soft)]">
-              <span className="inline-block h-2 w-2 rounded-full bg-[var(--flame)]" />
-              <span>
-                {sdk.user?.username
-                  ? `Printed for @${sdk.user.username}`
-                  : "First pressing"}
-              </span>
-            </div>
-            <hr className="rule-thin mt-3" />
+            <hr className="rule-thin mt-4" />
           </header>
         ) : null}
 
         {/* ── Not in a Farcaster host ──────────────────────────────── */}
         {!sdk.inHost && !busy ? (
           <NoticeBlock tone="cobalt" label="Open in Farcaster" delay="60ms">
-            This edition only prints inside a Farcaster app. Open it in the
-            Farcaster app to connect your wallet and mint your Circles account.
+            This mini app runs inside the Farcaster app. Open it there to
+            connect your wallet and create your Circles account.
           </NoticeBlock>
         ) : null}
 
         {/* ── Error ────────────────────────────────────────────────── */}
         {phase === "error" && errorMsg ? (
-          <NoticeBlock tone="flame" label="Stop the press" delay="60ms">
+          <NoticeBlock tone="flame" label="Something went wrong" delay="60ms">
             {errorMsg}
           </NoticeBlock>
         ) : null}
@@ -358,7 +353,7 @@ export function OnboardApp() {
               style={{ animationDelay: "200ms" }}
             >
               <span className="kicker text-[var(--ink-soft)]">
-                Your Circles Safe
+                Your smart wallet
               </span>
               <code className="mono mt-1.5 block break-all text-[13px] leading-snug">
                 {result.safeAddress}
@@ -366,7 +361,7 @@ export function OnboardApp() {
 
               <span className="stamp pointer-events-none absolute -top-3.5 right-3 grid place-items-center rounded-full border-[2.5px] border-[var(--cobalt)] px-3 py-2 text-center text-[var(--cobalt)]">
                 <span className="kicker leading-none">
-                  {certified ? "Certified" : "Safe"}
+                  {certified ? "Verified" : "Account"}
                 </span>
                 <span className="display text-sm leading-none">
                   {certified ? "HUMAN" : "LIVE"}
@@ -392,14 +387,14 @@ export function OnboardApp() {
                   openExternal(gnosisScanAddress(result.safeAddress))
                 }
               >
-                View Safe on Gnosisscan
+                View on Gnosisscan
               </button>
             </div>
 
             {result.txHashes.length > 0 ? (
               <div className="rise" style={{ animationDelay: "340ms" }}>
                 <span className="kicker text-[var(--ink-soft)]">
-                  On-chain receipts
+                  Transactions
                 </span>
                 <div className="mono mt-1.5 flex flex-col gap-1 text-xs">
                   {result.txHashes.map((h) => (
@@ -431,7 +426,7 @@ export function OnboardApp() {
 
             {/* What happens — compact three-step strip */}
             <div className="rise" style={{ animationDelay: "130ms" }}>
-              <h2 className="kicker text-[var(--ink-soft)]">What happens →</h2>
+              <h2 className="kicker text-[var(--ink-soft)]">What happens</h2>
               <div className="mt-1.5 grid grid-cols-3 gap-2">
                 {STEPS.map((s) => (
                   <div
@@ -493,7 +488,7 @@ export function OnboardApp() {
                   </p>
                 ) : verifiedAddrs.length === 0 ? (
                   <p className="mt-2.5 text-[13px] text-[var(--ink-soft)]">
-                    No verified addresses — your connected wallet signs alone.
+                    No verified addresses. Your connected wallet signs alone.
                   </p>
                 ) : (
                   <div className="mt-1">
@@ -549,7 +544,7 @@ export function OnboardApp() {
                 className="block-btn h-16 w-full bg-[var(--sun)] text-lg text-[var(--ink)]"
               >
                 <span aria-hidden>◎</span>
-                Mint my account
+                Create my account
               </button>
               <p className="kicker mt-2 text-center text-[var(--ink-soft)]">
                 Gas-free · No seed phrase · Yours to keep
@@ -561,7 +556,7 @@ export function OnboardApp() {
         {/* ── Colophon ─────────────────────────────────────────────── */}
         <footer className="mt-1">
           <hr className="rule-thin mb-3" />
-          <p className="kicker text-[var(--ink-soft)]">Colophon</p>
+          <p className="kicker text-[var(--ink-soft)]">About</p>
           <p className="mt-1 text-[11px] leading-snug text-[var(--ink-soft)]">
             Independent project. Built alongside the Circles team; not officially
             endorsed by Circles or Gnosis.
@@ -572,7 +567,7 @@ export function OnboardApp() {
         {DEBUG_ENABLED ? (
           <details className="panel bg-[var(--paper-2)] text-xs">
             <summary className="kicker cursor-pointer bg-[var(--ink)] px-3 py-2 text-[var(--paper)]">
-              Printer’s marks · dev
+              Debug
             </summary>
 
             <div className="px-3 py-3">
@@ -607,7 +602,7 @@ export function OnboardApp() {
                   value={
                     sdk.contextRaw
                       ? "yes"
-                      : "NO — hard-reload the mini-app (stale bundle)"
+                      : "NO. Hard-reload the mini-app (stale bundle)"
                   }
                 />
                 <DebugRow
@@ -690,8 +685,8 @@ function MintingState({
   return (
     <section className="flex min-h-[72svh] flex-col">
       <div className="kicker flex items-center justify-between text-[var(--ink-soft)]">
-        <span>The Daily Circle</span>
-        <span>Going to press</span>
+        <span>Circles</span>
+        <span>Setting up</span>
       </div>
       <hr className="rule mt-2.5" />
 
@@ -710,12 +705,12 @@ function MintingState({
       </div>
 
       <h2 className="display mt-4 text-center text-4xl uppercase">
-        Minting your
+        Creating your
         <br />
         account…
       </h2>
       <p className="mx-auto mt-2 max-w-[30ch] text-center text-[14px] leading-snug text-[var(--ink-soft)]">
-        Writing to Gnosis. This usually takes 15–30 seconds.
+        Writing to Gnosis. This usually takes 15 to 30 seconds.
       </p>
 
       {/* live milestone ledger — announced to screen readers as it advances */}

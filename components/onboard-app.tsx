@@ -310,9 +310,9 @@ export function OnboardApp() {
 
         {/* ── Not in a Farcaster host ──────────────────────────────── */}
         {!sdk.inHost && !busy ? (
-          <NoticeBlock tone="cobalt" label="Open in Warpcast" delay="60ms">
-            This edition only prints inside a Farcaster client. Open it in
-            Warpcast to connect your wallet and mint your Circles account.
+          <NoticeBlock tone="cobalt" label="Open in Farcaster" delay="60ms">
+            This edition only prints inside a Farcaster app. Open it in the
+            Farcaster app to connect your wallet and mint your Circles account.
           </NoticeBlock>
         ) : null}
 
@@ -326,7 +326,7 @@ export function OnboardApp() {
         {phase === "done" && result ? (
           /* ── The front-page win ─────────────────────────────────── */
           <section className="flex flex-col gap-6">
-            <div className="relative mx-auto grid h-32 w-full place-items-center">
+            <div className="relative mx-auto grid h-28 w-28 place-items-center">
               <span
                 className="ring-ripple"
                 style={{ animationDelay: "0s" }}
@@ -696,7 +696,7 @@ function MintingState({
       <hr className="rule mt-2.5" />
 
       {/* the press at work */}
-      <div className="relative mx-auto mt-8 mb-2 grid h-44 w-44 place-items-center">
+      <div className="relative mx-auto mt-8 mb-2 grid h-36 w-36 place-items-center">
         <span className="ring-ripple fast" style={{ animationDelay: "0s" }} aria-hidden />
         <span className="ring-ripple fast" style={{ animationDelay: "0.45s" }} aria-hidden />
         <span className="ring-ripple fast" style={{ animationDelay: "0.9s" }} aria-hidden />
@@ -774,7 +774,7 @@ function MintingState({
 
 function CoinMark({ busy, pfpUrl }: { busy: boolean; pfpUrl: string | null }) {
   return (
-    <div className="relative mx-auto grid h-36 w-36 place-items-center">
+    <div className="relative mx-auto grid h-32 w-32 place-items-center">
       <span
         className={cn("ring-ripple", busy && "fast")}
         style={{ animationDelay: "0s" }}

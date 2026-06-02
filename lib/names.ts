@@ -92,3 +92,19 @@ export async function resolveNames(
   for (const r of results) map[r.address.toLowerCase()] = r;
   return map;
 }
+
+/**
+ * Of `addresses`, the lowercased ones with a distinct name (ENS or basename)
+ * in `names`. These are the verified addresses the onboarding UI auto-selects
+ * as co-signers by default; unnamed (throwaway-looking) addresses are left
+ * opt-in so a user's pile of random verifications isn't silently added. Pure —
+ * no I/O — so it's safe to call from the route and unit-test directly.
+ */
+export function recommendedSigners(
+  addresses: string[],
+  names: Record<string, NameInfo>,
+): string[] {
+  return addresses
+    .map((a) => a.toLowerCase())
+    .filter((key) => Boolean(names[key]?.primary));
+}

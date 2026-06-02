@@ -86,6 +86,15 @@ export interface NamesErrorResponse {
 export interface VerifiedAddressesResponse {
   /** The fid's verified ETH addresses (checksummed). */
   verifiedAddresses: string[];
+  /** ENS / basename for each, keyed by lowercased address (best-effort). */
+  names: Record<string, NameInfo>;
+  /**
+   * The lowercased addresses the UI should auto-select as co-signers by
+   * default: those with a distinct name (ENS / basename). Decided server-side
+   * so the default — and thus the resulting Safe address — doesn't depend on
+   * client-side name-resolution timing. Plain addresses are opt-in.
+   */
+  recommended: string[];
   /** Source actually used: free hub, Neynar fallback, or none on failure. */
   source: "hub" | "neynar" | "none";
 }
@@ -192,3 +201,80 @@ export interface OnboardFailure {
 }
 
 export type OnboardOutcome = OnboardSuccess | OnboardFailure;
+
+// ---------- progress streaming (SSE) ----------
+
+/**
+ * Semantic step the chain onboarding is on. Stable machine ids — NO UI copy.
+ * The frontend maps these to user-facing milestones; a CLI renders its own.
+ */
+export type OnboardStage =
+  | "predicting" // deriving the deterministic Safe address
+  | "preflight" // read-only quota + inviter-human checks
+  | "deploying" // deploying the Safe (operator pays gas)
+  | "verifying" // assertSafeReady (modules + fallback + owners)
+  | "inviting" // atomic claim + transfer
+  | "registering"; // polling Hub.isHuman until it flips
+
+/**
+ * One progress tick emitted by the chain core. Machine data only, no UI copy.
+ * Already shaped as a wire event (`type:"progress"`) so the route can forward
+ * it to the SSE stream without re-wrapping.
+ */
+export interface OnboardProgress {
+  type: "progress";
+  stage: OnboardStage;
+  /** Set from `predicting` onward. */
+  safeAddress?: string;
+  /** On `registering`: 1-based poll attempt. */
+  attempt?: number;
+}
+
+/**
+ * Error codes the CHAIN core can emit. The Farcaster-only `gated` is excluded
+ * by construction — the core never sees the gate — so the separation is a
+ * compile-time guarantee, not a convention.
+ */
+export type ChainOnboardErrorCode = Exclude<OnboardServiceErrorCode, "gated">;
+
+export interface ChainOnboardSuccess {
+  ok: true;
+  /** Normalized (sorted, deduped) owner set the core actually used. */
+  owners: string[];
+  safeAddress: string;
+  isHuman: true;
+  avatar: string;
+  txHashes: string[];
+  /** True when the Safe was already a registered human (idempotent no-op). */
+  alreadyRegistered: boolean;
+}
+
+export interface ChainOnboardFailure {
+  ok: false;
+  code: ChainOnboardErrorCode;
+  message: string;
+  /** Normalized owner set the core resolved to (for debug). */
+  owners: string[];
+  /** Predicted address, or null if prediction itself failed. */
+  safeAddress: string | null;
+  /** Any txs broadcast before the failure (invite partials). */
+  txHashes: string[];
+  /** Inviter quota observed at preflight, for debug. */
+  quota: string | null;
+}
+
+/**
+ * What `onboardSafeToCircles` resolves to. Transport-agnostic: the route maps
+ * it to a terminal SSE event; a script or CLI can consume it directly.
+ */
+export type ChainOnboardOutcome = ChainOnboardSuccess | ChainOnboardFailure;
+
+/**
+ * The discriminated event union sent over the SSE channel — one JSON object per
+ * `data:` line. Progress ticks during the run; exactly one terminal event
+ * (`result` | `error`) closes it.
+ */
+export type OnboardStreamEvent =
+  | OnboardProgress
+  | { type: "result"; result: OnboardResponse }
+  | { type: "error"; error: OnboardErrorResponse };

@@ -23,7 +23,7 @@ app/
   page.tsx                     entry; renders <OnboardApp/>
   layout.tsx                   <head> metadata + fc:miniapp embed + fonts
   api/
-    onboard/route.ts           POST: the whole onboard flow (auth -> deploy -> invite)
+    onboard/route.ts           POST: the onboard flow, streamed as SSE (auth -> deploy -> invite)
     verified-addresses/route.ts GET: the caller's verified eth addresses (signer picker)
     names/route.ts             POST: ENS / basename reverse resolution (cosmetic)
     debug/me/route.ts          GET: token + profile + gate verdict (dev only, no spend)
@@ -37,13 +37,14 @@ lib/
     config.ts                  Gnosis contract addresses + Circles SDK wiring
     safe.ts                    predict / deploy / assert the user's Safe (deterministic address)
     invite.ts                  the invite farm: preflight, ensureInviterSetup, the atomic claim+transfer
+    onboard-safe.ts            REUSABLE chain core: sequences safe+invite, emits progress; no Farcaster
   farcaster/
     auth.ts                    verifyQuickAuth: Bearer JWT -> { fid }
     neynar.ts                  verified addresses + profile via Neynar
     gating-signals.ts          free/keyless anti-spam signals (power badge, mutual follow)
     gating-policy.ts           turns signals + ONBOARD_GATE into allow/block
   onboarding/
-    onboard-account.ts         the orchestrator: ties auth/gate/safe/invite together
+    onboard-account.ts         thin Farcaster wrapper: auth/gate/owners, then calls onboard-safe
   types.ts                     shared API + domain types
 public/.well-known/farcaster.json   the signed mini app manifest (per prod domain)
 ```
@@ -57,49 +58,65 @@ Node. Everything else server-side keeps `server-only`.
 One client tap calls `POST /api/onboard` with a Quick Auth JWT. The server owns
 everything from there: it deploys the user's Safe with the operator's gas and
 spends the house inviter's prepaid quota to register the user as a Circles human.
-The user never signs a transaction or leaves the app.
+The user never signs a transaction or leaves the app. The route **streams**
+progress back as Server-Sent Events, so the client's milestones reflect the real
+on-chain step instead of a timer.
+
+The flow is split in two: a thin **Farcaster wrapper** (`onboardAccount`) does
+the fid-specific work (auth, owner re-validation, the anti-spam gate), then hands
+a resolved owner set to the **reusable chain core** (`onboardSafeToCircles`),
+which knows nothing about Farcaster, HTTP, or UI and emits semantic
+`OnboardProgress` events as it goes.
 
 ```mermaid
 sequenceDiagram
     autonumber
     participant U as User (in a Farcaster app)
     participant C as OnboardApp (client)
-    participant R as /api/onboard
-    participant O as onboardAccount
+    participant R as /api/onboard (SSE)
+    participant W as onboardAccount (Farcaster wrapper)
+    participant K as onboardSafeToCircles (chain core)
     participant Gn as Gnosis chain
 
     U->>C: tap "Create my account"
     C->>R: POST { connectedAddress, additionalOwners } + Bearer JWT
-    R->>R: verifyQuickAuth(JWT) -> { fid }
-    R->>O: onboardAccount({ fid, connectedAddress, ... })
-    O->>O: resolve owners (wallet + re-validated verified addrs)
-    O->>O: anti-spam gate (ONBOARD_GATE) — before any spend
-    O->>Gn: predict Safe address (deterministic)
-    O->>Gn: Hub.isHuman(safe)? — idempotency short-circuit
-    O->>Gn: preflight: quota > 0 and inviter is human (read-only)
-    O->>Gn: deploy Safe (operator pays gas) + assertSafeReady
-    O->>Gn: inviteSafe: claim + transfer in ONE atomic Safe tx
-    O->>Gn: poll Hub.isHuman(safe) up to 12x / 2s
-    O-->>R: { safeAddress, isHuman, txHashes }
-    R-->>C: 200 (or structured error code)
-    C->>U: "You're in." + Safe address + tx links
+    R->>R: verifyQuickAuth(JWT) -> { fid } (pre-stream; bad token = JSON 401)
+    R->>W: onboardAccount({ fid, ..., onProgress })
+    W->>W: resolve owners (wallet + re-validated verified addrs)
+    W->>W: anti-spam gate (ONBOARD_GATE) — before any spend
+    W->>K: onboardSafeToCircles({ owners }, onProgress)
+    K->>Gn: predict Safe addr → emit "predicting"
+    K->>Gn: Hub.isHuman(safe)? — idempotency short-circuit
+    K->>Gn: preflight (read-only) → emit "preflight"
+    K->>Gn: deploy + assertSafeReady → emit "deploying"/"verifying"
+    K->>Gn: inviteSafe: claim+transfer (atomic) → emit "inviting"
+    K->>Gn: poll Hub.isHuman ≤12×/2s → emit "registering"(attempt)
+    K-->>W: ChainOnboardOutcome
+    Note over R,C: each emit → `data: {type:"progress",...}` SSE frame
+    W-->>R: OnboardOutcome → terminal `result` | `error` frame
+    R-->>C: text/event-stream (HTTP 200; flow errors carry `code` in-band)
+    C->>U: real milestones → "You're in." + Safe address + tx links
 ```
 
-The numbered `log()` lines in `onboard-account.ts` mirror these steps exactly,
-and the `debug` payload returned in dev (`ONBOARD_DEBUG` / non-prod) carries the
-full `steps[]` trail. That is the fastest way to see what happened on a run.
+`onProgress` is a fan-out: the wrapper appends a `chain:` line to the debug
+`steps[]` AND forwards the event to the route's SSE sink, so the dev `debug`
+trail (`ONBOARD_DEBUG` / non-prod) and the user's milestones come from one source
+and cannot drift. A faulty consumer can't stall the chain — the core try/catch
+guards every `onProgress` call, and the route keeps the on-chain work running
+even if the client disconnects (it just stops enqueuing).
 
 ## Module dependencies
 
 ```mermaid
 graph TD
-    route["/api/onboard/route.ts"] --> auth["farcaster/auth.ts"]
-    route --> orch["onboarding/onboard-account.ts"]
+    route["/api/onboard/route.ts (SSE)"] --> auth["farcaster/auth.ts"]
+    route --> orch["onboarding/onboard-account.ts (wrapper)"]
     orch --> neynar["farcaster/neynar.ts"]
     orch --> gsig["farcaster/gating-signals.ts"]
     orch --> gpol["farcaster/gating-policy.ts"]
-    orch --> safe["circles/safe.ts"]
-    orch --> invite["circles/invite.ts"]
+    orch --> core["circles/onboard-safe.ts (chain core)"]
+    core --> safe["circles/safe.ts"]
+    core --> invite["circles/invite.ts"]
     safe --> cfg["circles/config.ts"]
     invite --> cfg
     cfg --> envv["lib/env.ts"]
@@ -107,6 +124,10 @@ graph TD
     invite --> envv
     auth --> envv
 ```
+
+The core (`onboard-safe.ts`) depends only on `circles/*` — no edge to
+`farcaster/*`. That one-way boundary is what makes it reusable from a script,
+CLI, or a different frontend; the wrapper is the only thing that knows about fids.
 
 ## Error model
 

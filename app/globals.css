@@ -311,7 +311,7 @@
     animation: ripple 3.2s ease-out infinite;
 }
 .edition .ring-ripple.fast {
-    animation-duration: 1.3s;
+    animation-duration: 2.8s;
     border-color: var(--sun-deep);
 }
 
@@ -324,23 +324,28 @@
 }
 
 /* ---- working spinner ring ------------------------------------------------- */
+/* .spin: the small, snappy "active step" marker in the milestone ledger.
+   .spin-slow: the large minting ring — deliberately calm so the waiting state
+   reads as "working steadily", not "panicking". */
 .edition .spin {
     animation: spin360 1.1s linear infinite;
 }
+.edition .spin-slow {
+    animation: spin360 3s linear infinite;
+}
 
 /* ---- sticky action bar (primary tap always one reach away) --------------- */
+/* An opaque dock with a hard ink lid. Content tucking behind it scans as a
+   deliberate action shelf ("scroll for more"), not a veil hiding the signer
+   box. A soft gradient fade read as "something's obscured" and dented trust. */
 .edition .sticky-cta {
     position: sticky;
     bottom: 0;
     z-index: 30;
     padding-top: 0.85rem;
     padding-bottom: 0.55rem;
-    background: linear-gradient(
-        to top,
-        var(--paper) 0%,
-        var(--paper) 64%,
-        transparent 100%
-    );
+    background: var(--paper);
+    border-top: 2.5px solid var(--ink);
 }
 
 /* ---- collapsible disclosure (signer picker) ------------------------------ */
@@ -371,7 +376,7 @@
         transparent 68%
     );
     background-size: 250% 100%;
-    animation: sweep 1.4s linear infinite;
+    animation: sweep 2.6s linear infinite;
 }
 @keyframes sweep {
     from {
@@ -450,6 +455,7 @@
     .edition .stamp,
     .edition .coin,
     .edition .spin,
+    .edition .spin-slow,
     .edition .marquee-track,
     .edition .animate-pulse {
         animation: none !important;

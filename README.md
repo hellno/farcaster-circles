@@ -105,8 +105,8 @@ the "Open in Farcaster" state by design. For backend testing, call the API route
 directly with a valid Quick Auth token:
 
 - `POST /api/onboard` — the onboard flow.
-- `GET /api/verified-addresses` — the caller's verified eth addresses.
-- `POST /api/names` — ENS / basename reverse resolution (cosmetic).
+- `GET /api/verified-addresses` — the caller's verified eth addresses, each with its ENS / basename and which to recommend as default co-signers (named ones).
+- `POST /api/names` — standalone ENS / basename reverse resolution (cosmetic).
 - `GET /api/debug/me` — verifies your token and shows the gate verdict + profile, spends nothing (dev only).
 
 ## Running your own instance

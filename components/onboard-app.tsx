@@ -2,20 +2,26 @@
 
 import { useEffect, useRef, useState } from "react";
 
+import { env } from "@/lib/env";
 import { useMiniappSdk } from "@/hooks/use-miniapp-sdk";
+import { parseSseFrames } from "@/lib/sse";
 import type {
   DebugMeResponse,
   NameInfo,
-  NamesResponse,
   OnboardResponse,
+  OnboardStage,
+  OnboardStreamEvent,
   VerifiedAddressesResponse,
 } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 type Phase = "idle" | "connecting" | "submitting" | "done" | "error";
 
-const CIRCLES_APP_URL = "https://app.aboutcircles.com";
 const DEBUG_ENABLED = process.env.NODE_ENV !== "production";
+
+// The human whose prepaid invite quota powers this onboarding. Surfaced in the
+// masthead so the invitee knows whose invite they're spending.
+const INVITER_HANDLE = env.NEXT_PUBLIC_INVITER_HANDLE;
 
 // Compact "what happens" strip — kept to three taps-of-the-eye chips.
 const STEPS = [
@@ -24,9 +30,9 @@ const STEPS = [
   { n: "03", label: "Earn daily" },
 ] as const;
 
-// Milestones surfaced in the waiting state. We can't stream real progress from
-// a single POST, so these advance on a timer and hold on the last one until the
-// server actually responds — honest-ish, and it keeps people from leaving.
+// Milestones surfaced in the waiting state. These are driven by REAL progress
+// events streamed from /api/onboard (see STAGE_TO_MILESTONE) — the index only
+// ever moves forward as the chain work advances.
 const MINT_MILESTONES = [
   "Connecting your wallet",
   "Creating your smart wallet",
@@ -34,12 +40,30 @@ const MINT_MILESTONES = [
   "Starting your Circles",
 ] as const;
 
+// Frontend-owned mapping from a server OnboardStage to a milestone index. This
+// is UI presentation, so it lives here (the stages themselves carry no copy).
+// Milestone 3 "Starting your Circles" is shown on the terminal result.
+const STAGE_TO_MILESTONE: Record<OnboardStage, number> = {
+  predicting: 0,
+  preflight: 0, // "Connecting your wallet"
+  deploying: 1,
+  verifying: 1, // "Creating your smart wallet"
+  inviting: 2,
+  registering: 2, // "Verifying you're human"
+};
+
 function gnosisScanAddress(address: string): string {
   return `https://gnosisscan.io/address/${address}`;
 }
 
 function gnosisScanTx(hash: string): string {
   return `https://gnosisscan.io/tx/${hash}`;
+}
+
+// The Gnosis app profile page for an address — where the freshly onboarded
+// Safe (and its Circles balance) shows up.
+function gnosisAppProfile(address: string): string {
+  return `https://app.gnosis.io/p/${address}`;
 }
 
 function shortAddr(addr: string): string {
@@ -100,30 +124,18 @@ export function OnboardApp() {
         if (cancelled) return;
         const addrs = data.verifiedAddresses ?? [];
         setVerifiedAddrs(addrs);
-        // Pre-select all (auto = all verified; user can deselect).
+        setNames(data.names ?? {});
+        // Auto-select only the recommended (distinctly-named) addresses; the
+        // rest stay off so a user's pile of throwaway verifications isn't
+        // silently added as signers. The server decides `recommended`, so the
+        // default — and the predicted Safe address — is fixed up front and
+        // doesn't depend on name-resolution timing.
+        const recommended = new Set(
+          (data.recommended ?? []).map((a) => a.toLowerCase()),
+        );
         const sel: Record<string, boolean> = {};
-        for (const a of addrs) sel[a.toLowerCase()] = true;
+        for (const a of addrs) sel[a.toLowerCase()] = recommended.has(a.toLowerCase());
         setSelected(sel);
-
-        // Resolve names (ENS + basename) for the list — best effort.
-        if (addrs.length > 0) {
-          try {
-            const nres = await fetch("/api/names", {
-              method: "POST",
-              headers: {
-                "content-type": "application/json",
-                authorization: "Bearer " + token,
-              },
-              body: JSON.stringify({ addresses: addrs }),
-            });
-            if (!cancelled && nres.ok) {
-              const ndata = (await nres.json()) as NamesResponse;
-              if (!cancelled) setNames(ndata.names ?? {});
-            }
-          } catch {
-            // Names are cosmetic; ignore failures.
-          }
-        }
       } catch {
         // Non-fatal: onboarding works with the connected wallet alone.
       } finally {
@@ -147,15 +159,6 @@ export function OnboardApp() {
       setElapsed(Math.floor((Date.now() - mintStartRef.current) / 1000));
     }, 250);
     return () => clearInterval(tick);
-  }, [phase]);
-
-  // Advance the milestone copy while the POST is in flight (presentation only).
-  useEffect(() => {
-    if (phase !== "submitting") return;
-    const adv = setInterval(() => {
-      setMintStage((s) => Math.min(s + 1, MINT_MILESTONES.length - 1));
-    }, 4500);
-    return () => clearInterval(adv);
   }, [phase]);
 
   function toggle(addr: string) {
@@ -232,10 +235,12 @@ export function OnboardApp() {
         },
         body: JSON.stringify({ connectedAddress, additionalOwners }),
       });
-      const data = await res.json();
-      setRawResponse({ httpStatus: res.status, ...data });
 
-      if (!res.ok) {
+      // Pre-stream failures (auth 401, bad body 400, server 500) come back as a
+      // normal JSON response with a non-2xx status — not a stream.
+      if (!res.ok || !res.body) {
+        const data = await res.json();
+        setRawResponse({ httpStatus: res.status, ...data });
         setPhase("error");
         setErrorMsg(
           (data && typeof data.message === "string" && data.message) ||
@@ -244,8 +249,60 @@ export function OnboardApp() {
         return;
       }
 
-      setResult(data as OnboardResponse);
-      setPhase("done");
+      // Success path: consume the SSE progress stream. Each `data:` frame is one
+      // OnboardStreamEvent; progress ticks drive the milestone, and exactly one
+      // terminal event (result | error) closes it.
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let sawTerminal = false;
+
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        const { messages, rest } = parseSseFrames(
+          buffer + decoder.decode(value, { stream: true }),
+        );
+        buffer = rest;
+        for (const message of messages) {
+          let ev: OnboardStreamEvent;
+          try {
+            ev = JSON.parse(message) as OnboardStreamEvent;
+          } catch {
+            // A single malformed frame shouldn't abort the whole stream.
+            continue;
+          }
+          switch (ev.type) {
+            case "progress":
+              // Monotonic: real progress only ever moves the milestone forward.
+              setMintStage((prev) =>
+                Math.max(prev, STAGE_TO_MILESTONE[ev.stage] ?? prev),
+              );
+              break;
+            case "result":
+              setRawResponse({ httpStatus: 200, ...ev.result });
+              setResult(ev.result);
+              setPhase("done");
+              sawTerminal = true;
+              break;
+            case "error":
+              setRawResponse({ httpStatus: 200, ...ev.error });
+              setErrorMsg(ev.error.message);
+              setPhase("error");
+              sawTerminal = true;
+              break;
+          }
+        }
+      }
+
+      // A dropped stream must not leave an infinite spinner. The flow is
+      // idempotent, so retrying resolves it.
+      if (!sawTerminal) {
+        setPhase("error");
+        setErrorMsg(
+          "Lost connection before finishing. Tap to try again — your progress is saved.",
+        );
+      }
     } catch (err) {
       setPhase("error");
       setErrorMsg(err instanceof Error ? err.message : "Unexpected error.");
@@ -283,7 +340,14 @@ export function OnboardApp() {
 
             <hr className="rule mt-2.5" />
 
-            <h1 className="display mt-3.5 text-[clamp(2.4rem,12vw,3.3rem)] uppercase">
+            <p className="kicker mt-3.5 text-[var(--ink-soft)]">
+              Personal invite from{" "}
+              <span className="font-bold text-[var(--cobalt)]">
+                @{INVITER_HANDLE}
+              </span>
+            </p>
+
+            <h1 className="display mt-1.5 text-[clamp(2.4rem,12vw,3.3rem)] uppercase">
               Money
               <br />
               that{" "}
@@ -376,9 +440,9 @@ export function OnboardApp() {
               <button
                 type="button"
                 className="block-btn h-14 w-full bg-[var(--sun)] text-base text-[var(--ink)]"
-                onClick={() => openExternal(CIRCLES_APP_URL)}
+                onClick={() => openExternal(gnosisAppProfile(result.safeAddress))}
               >
-                Open the Circles app →
+                Open in Gnosis app →
               </button>
               <button
                 type="button"
@@ -415,7 +479,7 @@ export function OnboardApp() {
           </section>
         ) : busy ? (
           /* ── The press is running ───────────────────────────────── */
-          <MintingState phase={phase} mintStage={mintStage} elapsed={elapsed} />
+          <MintingState mintStage={mintStage} elapsed={elapsed} />
         ) : (
           /* ── The setup edition ──────────────────────────────────── */
           <>
@@ -450,7 +514,7 @@ export function OnboardApp() {
                 <span className="kicker text-[var(--paper)]">Signers</span>
                 <span className="flex items-center gap-2">
                   <span className="kicker rounded-full bg-[var(--sun)] px-2 py-0.5 text-[var(--ink)]">
-                    {verifiedAddrs.length > 0
+                    {selectedCount > 1
                       ? `Wallet + ${selectedCount - 1} verified`
                       : "Wallet only"}
                   </span>
@@ -463,8 +527,8 @@ export function OnboardApp() {
               <div className="px-3.5 pb-3 pt-2.5">
                 <p className="text-[13px] leading-snug text-[var(--ink-soft)]">
                   These addresses can sign for your account. Your connected
-                  wallet is always in; uncheck any verified address you’d rather
-                  leave out.
+                  wallet is always in. Named addresses (ENS or Base) are added
+                  by default; check any others you’d like to include.
                 </p>
 
                 <label className="mt-2.5 flex items-center gap-3 rounded-md bg-[var(--paper-2)] px-2.5 py-2.5">
@@ -498,7 +562,7 @@ export function OnboardApp() {
                       return (
                         <label
                           key={addr}
-                          className="rule-thin flex cursor-pointer items-center gap-3 border-t py-2.5"
+                          className="rule-thin flex cursor-pointer items-center gap-3 border-t px-2.5 py-2.5"
                         >
                           <input
                             type="checkbox"
@@ -669,18 +733,15 @@ export function OnboardApp() {
 /* ── Presentational pieces ─────────────────────────────────────────────── */
 
 function MintingState({
-  phase,
   mintStage,
   elapsed,
 }: {
-  phase: Phase;
   mintStage: number;
   elapsed: number;
 }) {
-  const current =
-    phase === "connecting"
-      ? 0
-      : Math.min(1 + mintStage, MINT_MILESTONES.length - 1);
+  // mintStage is the ACTUAL milestone index (0..3), driven by stream events.
+  // It is 0 during `connecting`, so no special-case is needed.
+  const current = Math.min(mintStage, MINT_MILESTONES.length - 1);
 
   return (
     <section className="flex min-h-[72svh] flex-col">
@@ -693,10 +754,10 @@ function MintingState({
       {/* the press at work */}
       <div className="relative mx-auto mt-8 mb-2 grid h-36 w-36 place-items-center">
         <span className="ring-ripple fast" style={{ animationDelay: "0s" }} aria-hidden />
-        <span className="ring-ripple fast" style={{ animationDelay: "0.45s" }} aria-hidden />
-        <span className="ring-ripple fast" style={{ animationDelay: "0.9s" }} aria-hidden />
+        <span className="ring-ripple fast" style={{ animationDelay: "0.93s" }} aria-hidden />
+        <span className="ring-ripple fast" style={{ animationDelay: "1.87s" }} aria-hidden />
         <span
-          className="spin absolute inset-[-12px] rounded-full border-[3px] border-dashed border-[var(--cobalt)]"
+          className="spin-slow absolute inset-[-12px] rounded-full border-[3px] border-dashed border-[var(--cobalt)]"
           aria-hidden
         />
         <div className="coin shimmer relative grid h-28 w-28 place-items-center overflow-hidden rounded-full bg-[var(--sun)]">

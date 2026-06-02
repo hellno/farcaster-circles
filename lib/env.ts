@@ -98,6 +98,11 @@ export const env = {
   // generateMetadata / OG images. Default to empty string so module load
   // never throws; downstream code must handle the empty case.
   NEXT_PUBLIC_APP_URL: process.env.NEXT_PUBLIC_APP_URL ?? "",
+  // Public display handle of the inviter whose prepaid quota powers onboarding
+  // (the human behind INVITER_SAFE_ADDRESS). Surfaced in the masthead as
+  // "by @<handle>". Provide it without a leading "@"; defaults to the
+  // project's house inviter.
+  NEXT_PUBLIC_INVITER_HANDLE: process.env.NEXT_PUBLIC_INVITER_HANDLE ?? "hellno",
 };
 
 /**

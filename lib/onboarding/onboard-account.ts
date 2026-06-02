@@ -7,17 +7,13 @@ import {
 } from "@/lib/farcaster/neynar";
 import { getSpamSignals } from "@/lib/farcaster/gating-signals";
 import { evaluateGate, type GatePolicy } from "@/lib/farcaster/gating-policy";
-import {
-  assertSafeReady,
-  deployUserSafe,
-  normalizeOwners,
-  predictUserSafe,
-} from "@/lib/circles/safe";
-import { getHubStatus, inviteSafe, preflightInvite } from "@/lib/circles/invite";
+import { normalizeOwners } from "@/lib/circles/safe";
+import { onboardSafeToCircles } from "@/lib/circles/onboard-safe";
 import type {
   NeynarProfile,
   OnboardDebug,
   OnboardOutcome,
+  OnboardProgress,
   SpamSignals,
 } from "@/lib/types";
 
@@ -29,6 +25,8 @@ export interface OnboardArgs {
   debug: boolean;
   /** Request id for log correlation. */
   reqId: string;
+  /** Progress sink (the route's SSE channel). Forwarded the core's events. */
+  onProgress?: (event: OnboardProgress) => void;
 }
 
 export interface DebugState {
@@ -210,140 +208,48 @@ export async function onboardAccount(
       }
     }
 
-    // 4. Predict the user's Safe address.
-    ({ safeAddress } = await predictUserSafe(owners as `0x${string}`[]));
-    log(`predicted safe: ${safeAddress}`);
+    // 4. Hand off to the transport-agnostic chain core (predict -> preflight ->
+    // deploy -> verify -> invite -> poll). The Farcaster layer above is done.
+    //
+    // FAN-OUT the core's progress: one event source, two sinks. We derive the
+    // debug trail from the SAME event the client receives, so the two can never
+    // drift. `log` is cheap and non-throwing; the core also try/catch-guards each
+    // onProgress call, so nothing here can break the money-spending sequence.
+    const onChainProgress = (e: OnboardProgress) => {
+      log(`chain: ${e.stage}${e.attempt ? ` (attempt ${e.attempt})` : ""}`);
+      args.onProgress?.(e); // forward to the route's SSE sink
+    };
 
-    // 5. Idempotent: already a registered human?
-    const pre = await getHubStatus(safeAddress as `0x${string}`);
-    if (pre.isHuman) {
-      log("already registered — returning existing");
+    const chain = await onboardSafeToCircles({ owners }, onChainProgress);
+
+    // Carry the core's resolved address into our debug payload (owners is already
+    // known). Quota is only observed on a failure outcome. Append one summary line.
+    safeAddress = chain.safeAddress;
+    if (chain.ok) {
+      log(
+        `chain: registered safe=${chain.safeAddress} alreadyRegistered=${chain.alreadyRegistered}`,
+      );
       return {
         ok: true,
         response: {
-          safeAddress,
-          isHuman: true,
-          avatar: pre.avatar,
+          safeAddress: chain.safeAddress,
+          isHuman: chain.isHuman,
+          avatar: chain.avatar,
           modules: { invitation: true, erc4337: true },
-          txHashes: [],
-          alreadyRegistered: true,
+          txHashes: chain.txHashes,
+          alreadyRegistered: chain.alreadyRegistered,
           debug: localBuildDebug(),
         },
       };
     }
-
-    // 6. Invite preflight (read-only) — runs BEFORE deploy so a doomed onboard
-    // costs no gas. Checks quota and that the inviter is a registered human.
-    const pf = await preflightInvite();
-    quota = pf.quota.toString();
-    log(
-      `preflight: ${pf.checks.map((c) => `${c.name}=${c.ok ? "OK" : "FAIL"}`).join(" ")}`,
-    );
-    if (!pf.ok) {
-      const failed = pf.failed!;
-      log(`preflight FAILED at ${failed.name}: ${failed.detail}`);
-      if (failed.name === "quota") {
-        return {
-          ok: false,
-          code: "no_quota",
-          message: "house inviter exhausted, request a new quota grant",
-          debug: localBuildDebug(),
-        };
-      }
-      return {
-        ok: false,
-        code: "inviter_unavailable",
-        message:
-          "onboarding is temporarily unavailable — the inviter can't issue invites right now",
-        debug: localBuildDebug(),
-      };
-    }
-
-    // 7. Deploy + verify the Safe.
-    try {
-      const dep = await deployUserSafe(owners as `0x${string}`[]);
-      log(
-        dep.alreadyDeployed
-          ? "safe already deployed"
-          : `safe deployed tx=${dep.txHash}`,
-      );
-    } catch (err) {
-      log(`deploy FAILED: ${errorMessage(err)}`);
-      return {
-        ok: false,
-        code: "deploy_failed",
-        message: errorMessage(err),
-        debug: localBuildDebug(),
-      };
-    }
-    try {
-      await assertSafeReady(
-        safeAddress as `0x${string}`,
-        owners as `0x${string}`[],
-      );
-      log("assertSafeReady: OK (modules + fallback + version + threshold + owners)");
-    } catch (err) {
-      log(`assertSafeReady FAILED: ${errorMessage(err)}`);
-      return {
-        ok: false,
-        code: "safe_not_ready",
-        message: errorMessage(err),
-        debug: localBuildDebug(),
-      };
-    }
-
-    // 8. Invite (ensureInviterSetup + claim/transfer via pathfinder).
-    let txHashes: string[] = [];
-    try {
-      ({ txHashes } = await inviteSafe(safeAddress as `0x${string}`));
-      log(`invite txs: ${txHashes.join(", ")}`);
-    } catch (err) {
-      log(`invite FAILED: ${errorMessage(err)}`);
-      return {
-        ok: false,
-        code: "invite_failed",
-        message: errorMessage(err),
-        txHashes,
-        debug: localBuildDebug(),
-      };
-    }
-
-    // 9. Poll for registration.
-    let registered = false;
-    for (let i = 0; i < 12; i++) {
-      const status = await getHubStatus(safeAddress as `0x${string}`);
-      if (status.isHuman) {
-        registered = true;
-        break;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 2000));
-    }
-    if (!registered) {
-      log("poll: not registered after timeout");
-      return {
-        ok: false,
-        code: "not_registered",
-        message:
-          "invite transactions sent but the Safe is not registered as human yet",
-        txHashes,
-        debug: localBuildDebug(),
-      };
-    }
-
-    // 10. Success.
-    const final = await getHubStatus(safeAddress as `0x${string}`);
-    log(`SUCCESS isHuman=true avatar=${final.avatar}`);
+    quota = chain.quota;
+    log(`chain: FAILED ${chain.code} — ${chain.message}`);
     return {
-      ok: true,
-      response: {
-        safeAddress,
-        isHuman: true,
-        avatar: final.avatar,
-        modules: { invitation: true, erc4337: true },
-        txHashes,
-        alreadyRegistered: false,
-        debug: localBuildDebug(),
-      },
+      ok: false,
+      code: chain.code,
+      message: chain.message,
+      ...(chain.txHashes.length ? { txHashes: chain.txHashes } : {}),
+      debug: localBuildDebug(),
     };
   } catch (err) {
     log(`server_error: ${errorMessage(err)}`);

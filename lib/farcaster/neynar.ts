@@ -174,6 +174,93 @@ export async function fetchUserProfile(
   };
 }
 
+// ---------- display card (pfp + name), hub-first ----------
+
+/** Minimal profile fields the OG share cards render. */
+export interface FarcasterCard {
+  username: string;
+  displayName: string;
+  pfpUrl: string;
+}
+
+interface HubUserDataMessage {
+  data?: {
+    userDataBody?: {
+      type?: string;
+      value?: string;
+    };
+  };
+}
+
+interface HubUserDataResponse {
+  messages?: HubUserDataMessage[];
+}
+
+/**
+ * An fid's display card (pfp / display name / username) from the free, keyless
+ * hub via userDataByFid. Throws on HTTP error so the caller can fall back to
+ * Neynar. Returns null only when the hub responds but carries no usable fields.
+ */
+async function fetchFarcasterCardFromHub(
+  fid: number,
+): Promise<FarcasterCard | null> {
+  const res = await fetch(`${FARCASTER_HUB_URL}/v1/userDataByFid?fid=${fid}`, {
+    method: "GET",
+    headers: { accept: "application/json" },
+    cache: "no-store",
+    next: { revalidate: 0 },
+  });
+  if (!res.ok) throw new Error(`Hub ${res.status}`);
+  const json = (await res.json()) as HubUserDataResponse;
+  let username = "";
+  let displayName = "";
+  let pfpUrl = "";
+  for (const m of json.messages ?? []) {
+    const body = m.data?.userDataBody;
+    const value = body?.value ?? "";
+    switch (body?.type) {
+      case "USER_DATA_TYPE_USERNAME":
+        username = value;
+        break;
+      case "USER_DATA_TYPE_DISPLAY":
+        displayName = value;
+        break;
+      case "USER_DATA_TYPE_PFP":
+        pfpUrl = value;
+        break;
+    }
+  }
+  if (!username && !displayName && !pfpUrl) return null;
+  return { username, displayName: displayName || username, pfpUrl };
+}
+
+/**
+ * An fid's display card for the share OG image. Tries the free keyless hub
+ * first (no Neynar plan needed — same hub-first pattern as
+ * `fetchVerifiedEthAddresses`), then falls back to Neynar. Returns null if both
+ * fail, so the caller can render a name/pfp-less fallback.
+ */
+export async function fetchFarcasterCard(
+  fid: number,
+): Promise<FarcasterCard | null> {
+  try {
+    const fromHub = await fetchFarcasterCardFromHub(fid);
+    if (fromHub) return fromHub;
+  } catch (hubErr) {
+    console.warn(
+      `[neynar] hub userData failed for fid=${fid}, falling back to Neynar:`,
+      hubErr instanceof Error ? hubErr.message : hubErr,
+    );
+  }
+  const summary = await fetchUserByFid(fid).catch(() => null);
+  if (!summary) return null;
+  return {
+    username: summary.username,
+    displayName: summary.displayName,
+    pfpUrl: summary.pfpUrl,
+  };
+}
+
 export async function fetchUserByFid(
   fid: number,
 ): Promise<UserSummary | null> {

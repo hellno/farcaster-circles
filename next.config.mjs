@@ -11,6 +11,13 @@ const nextConfig = {
     "@safe-global/protocol-kit",
     "@safe-global/relay-kit",
   ],
+  // Ensure the OG card fonts are bundled into the serverless functions that
+  // generate the images (the `new URL(import.meta.url)` read is traced under
+  // `next start`, but this pins it for Vercel's function tracing too).
+  outputFileTracingIncludes: {
+    "/api/og": ["./lib/og/fonts/**"],
+    "/api/og/[fid]": ["./lib/og/fonts/**"],
+  },
   images: {
     remotePatterns: [
       { protocol: "https", hostname: "imagedelivery.net" },

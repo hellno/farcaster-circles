@@ -47,6 +47,29 @@ export const HUB_ABI = [
   },
 ] as const;
 
+// --- Minimal NameRegistry ABI (chain-100 `NAME_REGISTRY`) ---
+// `updateMetadataDigest` is called BY the avatar (the user's Safe) to point its
+// Circles profile at an off-chain metadata CID. Verified on-chain to have NO
+// precondition (no onlyHub / isHuman gate): it just stores
+// `avatarToMetaDataDigest[msg.sender] = digest`. `avatarToMetaDataDigest` is the
+// public mapping we read for idempotency (zero == unset).
+export const NAME_REGISTRY_ABI = [
+  {
+    type: "function",
+    name: "updateMetadataDigest",
+    stateMutability: "nonpayable",
+    inputs: [{ name: "_metadataDigest", type: "bytes32" }],
+    outputs: [],
+  },
+  {
+    type: "function",
+    name: "avatarToMetaDataDigest",
+    stateMutability: "view",
+    inputs: [{ name: "", type: "address" }],
+    outputs: [{ name: "", type: "bytes32" }],
+  },
+] as const;
+
 /** Canonical Circles config for chain 100 (Gnosis). circlesRpcUrl comes from env. */
 export function getCirclesConfig(): CirclesConfig {
   return {

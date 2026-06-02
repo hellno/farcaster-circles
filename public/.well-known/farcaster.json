@@ -1,17 +1,17 @@
 {
   "accountAssociation": {
-    "header": "TODO_SIGN_FOR_PROD_DOMAIN",
-    "payload": "TODO_SIGN_FOR_PROD_DOMAIN",
-    "signature": "TODO_SIGN_FOR_PROD_DOMAIN"
+    "header": "eyJmaWQiOjEzNTk2LCJ0eXBlIjoiYXV0aCIsImtleSI6IjB4RDQ2MTY4QjMwQWU2OGI0MGNCRWE3ZDZBODkyNmZBMDc1M0FlMWM0ZiJ9",
+    "payload": "eyJkb21haW4iOiJmYXJjYXN0ZXItY2lyY2xlcy52ZXJjZWwuYXBwIn0",
+    "signature": "UdKg/C5bwu3K8ovy2gVdA/uLxNxhfrJYPp4XFdscFnctGht1wEAwsZNBU0TRNtju5/xQ6voa3Aamvz8ur4zQ3Rw="
   },
   "frame": {
     "version": "1",
     "name": "Circles Onboard",
-    "iconUrl": "https://TODO/icon.png",
-    "homeUrl": "https://TODO",
-    "imageUrl": "https://TODO/og.png",
+    "iconUrl": "https://farcaster-circles.vercel.app/api/og/mark",
+    "homeUrl": "https://farcaster-circles.vercel.app",
+    "imageUrl": "https://farcaster-circles.vercel.app/api/og",
     "buttonTitle": "Open Circles Onboard",
-    "splashImageUrl": "https://TODO/splash.png",
+    "splashImageUrl": "https://farcaster-circles.vercel.app/api/og/mark",
     "splashBackgroundColor": "#f3e8cf"
   }
 }

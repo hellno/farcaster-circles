@@ -11,11 +11,23 @@ import type {
   OnboardResponse,
   OnboardStage,
   OnboardStreamEvent,
+  ProfileErrorResponse,
+  ProfilePrepareResponse,
+  ProfileRelayResponse,
   VerifiedAddressesResponse,
 } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 type Phase = "idle" | "connecting" | "submitting" | "done" | "error";
+
+type ProfilePhase =
+  | "idle"
+  | "preparing"
+  | "signing"
+  | "relaying"
+  | "done"
+  | "alreadySet"
+  | "error";
 
 const DEBUG_ENABLED = process.env.NODE_ENV !== "production";
 
@@ -98,6 +110,12 @@ export function OnboardApp() {
   const [elapsed, setElapsed] = useState(0);
   const mintStartRef = useRef(0);
 
+  // Post-success "Set Circles profile" action (optional, failure-isolated —
+  // never touches `phase`/`result`).
+  const [profilePhase, setProfilePhase] = useState<ProfilePhase>("idle");
+  const [profileMsg, setProfileMsg] = useState<string | null>(null);
+  const [profileTxHash, setProfileTxHash] = useState<string | null>(null);
+
   // Debug state.
   const [rawResponse, setRawResponse] = useState<unknown>(null);
   const [lastConnectedAddress, setLastConnectedAddress] = useState<
@@ -107,6 +125,17 @@ export function OnboardApp() {
   const [debugMeBusy, setDebugMeBusy] = useState(false);
 
   const busy = phase === "connecting" || phase === "submitting";
+  const profileBusy =
+    profilePhase === "preparing" ||
+    profilePhase === "signing" ||
+    profilePhase === "relaying";
+  // The action only makes sense when we have an identity to write and a wallet
+  // to sign with. (The server still re-checks and 422s if there's no name.)
+  const canSetProfile = !!(
+    (sdk.user?.displayName || sdk.user?.username) &&
+    sdk.provider &&
+    sdk.token
+  );
 
   // Load the fid's verified addresses (and their names) once we have a token.
   useEffect(() => {
@@ -309,6 +338,115 @@ export function OnboardApp() {
     }
   }
 
+  // Share the win back to Farcaster. The embed URL carries a per-fid OG card
+  // (the user's pfp), and tapping it launches the app — so each onboard can pull
+  // the next person in. Falls back to the page origin when APP_URL isn't set
+  // (e.g. local tunnel testing).
+  async function shareToFarcaster() {
+    if (sdk.fid == null) return;
+    const base = env.NEXT_PUBLIC_APP_URL || window.location.origin;
+    await sdk.composeCast({
+      text: `I just set up my Circles account — money that grows on you. Thanks for the invite @${INVITER_HANDLE} 🌱`,
+      embeds: [`${base}/share/${sdk.fid}`],
+    });
+  }
+
+  // Optional post-success step: write the user's Farcaster name + photo to their
+  // Circles profile. The user signs ONE gas-free EIP-712 Safe tx; the operator
+  // relays it. Fully isolated from onboarding — any failure (incl. a rejected
+  // signature) only sets `profilePhase`, never the onboard `phase`/`result`.
+  async function handleSetProfile() {
+    if (!sdk.token || !sdk.provider || !result) return;
+    const token = sdk.token;
+    const provider = sdk.provider;
+    setProfileMsg(null);
+    setProfilePhase("preparing");
+    try {
+      const prepRes = await fetch("/api/profile", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: "Bearer " + token,
+        },
+        body: JSON.stringify({ step: "prepare", safeAddress: result.safeAddress }),
+      });
+      const prep = (await prepRes.json()) as
+        | ProfilePrepareResponse
+        | ProfileErrorResponse;
+      if (!prepRes.ok) {
+        setProfilePhase("error");
+        setProfileMsg(
+          (prep as ProfileErrorResponse).message ||
+            "Couldn't prepare your profile.",
+        );
+        return;
+      }
+      const prepared = prep as ProfilePrepareResponse;
+      if (prepared.alreadySet) {
+        setProfilePhase("alreadySet");
+        return;
+      }
+
+      // Sign with the connected owner. We captured it during onboard; re-request
+      // if missing (e.g. a fresh session landing straight on the done screen).
+      let signer = lastConnectedAddress;
+      if (!signer) {
+        const accounts = (await provider.request({
+          method: "eth_requestAccounts",
+        })) as string[];
+        signer = accounts?.[0] ?? null;
+      }
+      if (!signer) {
+        setProfilePhase("error");
+        setProfileMsg("Connect a wallet to sign.");
+        return;
+      }
+
+      setProfilePhase("signing");
+      const signature = (await provider.request({
+        method: "eth_signTypedData_v4",
+        params: [signer, JSON.stringify(prepared.typedData)],
+      })) as string;
+
+      setProfilePhase("relaying");
+      const relayRes = await fetch("/api/profile", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: "Bearer " + token,
+        },
+        body: JSON.stringify({
+          step: "relay",
+          safeAddress: result.safeAddress,
+          digest: prepared.digest,
+          signerAddress: signer,
+          signature,
+        }),
+      });
+      const relay = (await relayRes.json()) as
+        | ProfileRelayResponse
+        | ProfileErrorResponse;
+      if (!relayRes.ok) {
+        setProfilePhase("error");
+        setProfileMsg(
+          (relay as ProfileErrorResponse).message ||
+            "Couldn't set your profile.",
+        );
+        return;
+      }
+      setProfileTxHash((relay as ProfileRelayResponse).txHash);
+      setProfilePhase("done");
+    } catch (err) {
+      // Most commonly: the user rejected the signature. Recoverable — tap again.
+      setProfilePhase("error");
+      setProfileMsg(
+        err instanceof Error ? err.message : "Couldn't set your profile.",
+      );
+    }
+  }
+
+  const canShare = sdk.inHost && sdk.fid != null;
+
   const selectedCount =
     1 /* connected wallet, always */ +
     verifiedAddrs.filter((a) => selected[a.toLowerCase()]).length;
@@ -437,9 +575,19 @@ export function OnboardApp() {
               className="rise flex flex-col gap-3"
               style={{ animationDelay: "280ms" }}
             >
+              {canShare ? (
+                <button
+                  type="button"
+                  className="block-btn h-14 w-full bg-[var(--sun)] text-base text-[var(--ink)]"
+                  onClick={shareToFarcaster}
+                >
+                  <span aria-hidden>◎</span>
+                  Share to Farcaster
+                </button>
+              ) : null}
               <button
                 type="button"
-                className="block-btn h-14 w-full bg-[var(--sun)] text-base text-[var(--ink)]"
+                className="block-btn h-12 w-full bg-[var(--paper)] text-sm text-[var(--ink)]"
                 onClick={() => openExternal(gnosisAppProfile(result.safeAddress))}
               >
                 Open in Gnosis app →
@@ -454,6 +602,73 @@ export function OnboardApp() {
                 View on Gnosisscan
               </button>
             </div>
+
+            {/* Personalize: name + photo onto the Circles account (optional) */}
+            {canSetProfile ? (
+              <div className="rise" style={{ animationDelay: "320ms" }}>
+                {profilePhase === "done" ? (
+                  <div className="panel-pop relative bg-[var(--paper-2)] p-4">
+                    <span className="kicker text-[var(--ink-soft)]">
+                      Circles profile
+                    </span>
+                    <p className="mt-1 text-[14px] font-semibold">
+                      Profile set ✓
+                    </p>
+                    <p className="mt-0.5 text-[13px] text-[var(--ink-soft)]">
+                      Your name{sdk.user?.pfpUrl ? " and photo" : ""} now show in
+                      the Circles app.
+                    </p>
+                    {profileTxHash ? (
+                      <a
+                        href={gnosisScanTx(profileTxHash)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="mono mt-1.5 inline-flex items-center gap-2 break-all text-xs underline decoration-2 underline-offset-2 hover:text-[var(--cobalt)]"
+                      >
+                        <span aria-hidden>↳</span>
+                        {shortAddr(profileTxHash)}
+                      </a>
+                    ) : null}
+                  </div>
+                ) : profilePhase === "alreadySet" ? (
+                  <div className="panel-pop bg-[var(--paper-2)] p-4">
+                    <span className="kicker text-[var(--ink-soft)]">
+                      Circles profile
+                    </span>
+                    <p className="mt-1 text-[14px]">
+                      Your Circles profile is already set.
+                    </p>
+                  </div>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      onClick={handleSetProfile}
+                      disabled={profileBusy}
+                      className="block-btn h-14 w-full bg-[var(--cobalt)] text-base text-[var(--paper)]"
+                    >
+                      {profilePhase === "preparing"
+                        ? "Preparing…"
+                        : profilePhase === "signing"
+                          ? "Confirm in your wallet…"
+                          : profilePhase === "relaying"
+                            ? "Setting profile…"
+                            : "Set your Circles profile"}
+                    </button>
+                    <p className="kicker mt-2 text-center text-[var(--ink-soft)]">
+                      Use your Farcaster name
+                      {sdk.user?.pfpUrl ? " + photo" : ""} · One tap to sign ·
+                      Gas-free
+                    </p>
+                    {profilePhase === "error" && profileMsg ? (
+                      <p className="mt-2 text-[13px] text-[var(--flame)]">
+                        {profileMsg} Tap to retry.
+                      </p>
+                    ) : null}
+                  </>
+                )}
+              </div>
+            ) : null}
 
             {result.txHashes.length > 0 ? (
               <div className="rise" style={{ animationDelay: "340ms" }}>

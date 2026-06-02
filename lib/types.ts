@@ -104,6 +104,75 @@ export interface VerifiedAddressesErrorResponse {
   message: string;
 }
 
+// ---------- /api/profile (set Circles name + avatar, post-onboard) ----------
+
+/**
+ * EIP-712 typed data for a Safe transaction, as produced by protocol-kit's
+ * `generateTypedData` and consumed by the wallet's `eth_signTypedData_v4`.
+ * Numeric fields are serialized to strings before crossing the wire (bigints
+ * don't JSON-encode), which is valid EIP-712 for uint256 inputs.
+ */
+export interface ProfileTypedData {
+  types: Record<string, { name: string; type: string }[]>;
+  primaryType: string;
+  domain: Record<string, unknown>;
+  message: Record<string, unknown>;
+}
+
+export interface ProfilePrepareRequest {
+  /** The user's Safe address (from the onboard result). */
+  safeAddress: string;
+}
+
+/** Profile already set on-chain — no signature needed (idempotent). */
+export interface ProfilePrepareAlreadySet {
+  alreadySet: true;
+}
+
+/** Profile not set — client must sign `typedData` and POST it to `relay`. */
+export interface ProfilePrepareNeedsSignature {
+  alreadySet: false;
+  /** The Circles profile name we'll set (displayName || username, clamped). */
+  name: string;
+  /** Whether an avatar thumbnail was attached to the uploaded profile. */
+  hasImage: boolean;
+  /** 0x-prefixed 32-byte metadata digest (the uploaded profile's CID). */
+  digest: string;
+  /** Safe-tx typed data to sign with `eth_signTypedData_v4`. */
+  typedData: ProfileTypedData;
+}
+
+export type ProfilePrepareResponse =
+  | ProfilePrepareAlreadySet
+  | ProfilePrepareNeedsSignature;
+
+export interface ProfileRelayRequest {
+  safeAddress: string;
+  /** Must equal the digest returned by `prepare` (0x + 64 hex). */
+  digest: string;
+  /** The owner address that produced `signature`. */
+  signerAddress: string;
+  /** The owner's `eth_signTypedData_v4` signature over the prepared Safe tx. */
+  signature: string;
+}
+
+export interface ProfileRelayResponse {
+  txHash: string;
+}
+
+export type ProfileErrorCode =
+  | "unauthorized"
+  | "invalid_request"
+  | "no_profile" // the fid has no usable display name / username
+  | "upload_failed" // profile service (IPFS pin) rejected/unreachable
+  | "relay_failed" // operator execTransaction failed or digest didn't stick
+  | "server_error";
+
+export interface ProfileErrorResponse {
+  error: ProfileErrorCode;
+  message: string;
+}
+
 // ---------- onboard debug payload (dev only) ----------
 
 export interface OnboardDebug {

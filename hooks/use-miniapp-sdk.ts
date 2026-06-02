@@ -1,9 +1,17 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 export interface Eip1193Provider {
   request(args: { method: string; params?: unknown[] | object }): Promise<unknown>;
+}
+
+/** Subset of the SDK's composeCast options we use (share action). */
+export interface ComposeCastOptions {
+  text?: string;
+  embeds?: [] | [string] | [string, string];
+  channelKey?: string;
+  close?: boolean;
 }
 
 export interface MiniappUser {
@@ -23,9 +31,18 @@ export interface MiniappState {
   user: MiniappUser | null;
   /** The complete, unmodified Farcaster mini-app SDK context (debug only). */
   contextRaw: unknown;
+  /**
+   * Open the host's cast composer (share action). No-op returning null outside a
+   * Farcaster host. Resolves to the SDK's composeCast result (or null).
+   */
+  composeCast: (opts: ComposeCastOptions) => Promise<unknown>;
 }
 
-const INITIAL_STATE: MiniappState = {
+// The data fields the effect owns. `composeCast` is a stable callback added by
+// the hook on return, so it's excluded here.
+type MiniappData = Omit<MiniappState, "composeCast">;
+
+const INITIAL_STATE: MiniappData = {
   fid: null,
   token: null,
   ready: false,
@@ -43,7 +60,23 @@ interface MiniappWallet {
 }
 
 export function useMiniappSdk(): MiniappState {
-  const [state, setState] = useState<MiniappState>(INITIAL_STATE);
+  const [state, setState] = useState<MiniappData>(INITIAL_STATE);
+  // Mirrors state.inHost for the stable composeCast callback (avoids re-creating
+  // it on every state change / reading a stale closure).
+  const inHostRef = useRef(false);
+
+  const composeCast = useCallback(
+    async (opts: ComposeCastOptions): Promise<unknown> => {
+      if (!inHostRef.current) return null;
+      try {
+        const { sdk } = await import("@farcaster/miniapp-sdk");
+        return await sdk.actions.composeCast(opts);
+      } catch {
+        return null;
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -101,6 +134,7 @@ export function useMiniappSdk(): MiniappState {
 
         if (cancelled) return;
 
+        inHostRef.current = true;
         setState({
           fid,
           token,
@@ -147,5 +181,5 @@ export function useMiniappSdk(): MiniappState {
     };
   }, []);
 
-  return state;
+  return { ...state, composeCast };
 }

@@ -7,6 +7,7 @@ import {
 
 import "./globals.css";
 import { ThemeProvider } from "@/components/theme-provider";
+import { buildMiniappEmbed } from "@/lib/farcaster/miniapp-embed";
 import { cn } from "@/lib/utils";
 
 // Editorial type system: a wonky display grotesque for mastheads, a clean
@@ -24,6 +25,20 @@ const fontMono = Space_Mono({
 
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "";
 
+// The main app embed. `imageUrl` is the generated static landing card
+// (`/api/og`), not a static file. `fc:frame` is emitted alongside `fc:miniapp`
+// for back-compat with older clients.
+const OG_IMAGE_URL = `${APP_URL}/api/og`;
+const miniappEmbed = APP_URL
+  ? JSON.stringify(
+      buildMiniappEmbed({
+        appUrl: APP_URL,
+        imageUrl: OG_IMAGE_URL,
+        buttonTitle: "Open Circles Onboard",
+      }),
+    )
+  : "";
+
 export const metadata: Metadata = {
   title: "Circles Onboard",
   description: "Create your Circles account, gas-free, in one tap.",
@@ -31,25 +46,10 @@ export const metadata: Metadata = {
   openGraph: {
     title: "Circles Onboard",
     description: "Create your Circles account, gas-free, in one tap.",
-    images: APP_URL ? [`${APP_URL}/og.png`] : [],
+    images: APP_URL ? [OG_IMAGE_URL] : [],
   },
-  other: APP_URL
-    ? {
-        "fc:miniapp": JSON.stringify({
-          version: "1",
-          imageUrl: `${APP_URL}/og.png`,
-          button: {
-            title: "Open Circles Onboard",
-            action: {
-              type: "launch_miniapp",
-              name: "Circles Onboard",
-              url: APP_URL,
-              splashImageUrl: `${APP_URL}/splash.png`,
-              splashBackgroundColor: "#f3e8cf",
-            },
-          },
-        }),
-      }
+  other: miniappEmbed
+    ? { "fc:miniapp": miniappEmbed, "fc:frame": miniappEmbed }
     : {},
 };
 

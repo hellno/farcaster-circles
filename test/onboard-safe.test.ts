@@ -26,11 +26,16 @@ vi.mock("@/lib/circles/invite", () => ({
   preflightInvite: vi.fn(),
   inviteSafe: vi.fn(async () => ({ txHashes: [] })),
 }));
+vi.mock("@/lib/circles/account-status", () => ({
+  findRegisteredSafe: vi.fn(),
+}));
 
 const SAFE = "0x" + "1".repeat(40);
 const CONNECTED = "0x" + "c".repeat(40);
 const AVATAR = "0x" + "9".repeat(40);
 const ZERO = "0x" + "0".repeat(40);
+const OTHER = "0x" + "d".repeat(40);
+const REGISTERED = "0x" + "f".repeat(40);
 const INVITE_HASHES = ["0x" + "a".repeat(64), "0x" + "b".repeat(64)];
 
 const PREFLIGHT_OK = {
@@ -46,6 +51,7 @@ const PREFLIGHT_OK = {
 import { onboardSafeToCircles } from "@/lib/circles/onboard-safe";
 import * as invite from "@/lib/circles/invite";
 import * as safeMod from "@/lib/circles/safe";
+import { findRegisteredSafe } from "@/lib/circles/account-status";
 import type { OnboardProgress } from "@/lib/types";
 
 beforeEach(() => {
@@ -63,6 +69,9 @@ beforeEach(() => {
   vi.mocked(invite.preflightInvite).mockResolvedValue(PREFLIGHT_OK as never);
   vi.mocked(invite.getHubStatus).mockResolvedValue({ isHuman: false, avatar: ZERO } as never);
   vi.mocked(invite.inviteSafe).mockResolvedValue({ txHashes: INVITE_HASHES } as never);
+  // Default: no candidate hit, so the D8 block (when reached) stays inert and
+  // tests that pass NO candidateSets are unaffected.
+  vi.mocked(findRegisteredSafe).mockResolvedValue(null);
 });
 
 /** Collect the stage of every emitted progress event into an ordered array. */
@@ -316,5 +325,141 @@ describe("onboardSafeToCircles — progress sink robustness", () => {
     }
     // The sink WAS invoked (and threw) — proving the swallow path ran.
     expect(onProgress).toHaveBeenCalled();
+  });
+});
+
+describe("onboardSafeToCircles — D8 candidate short-circuit", () => {
+  it("short-circuits on a non-default candidate Safe — no deploy, no quota spend", async () => {
+    // The DEFAULT set's Safe is NOT human, so the line-78 fast path doesn't fire;
+    // a non-default candidate IS already a registered human. We must return its
+    // Safe and spend nothing. getHubStatus is called twice: (1) the default
+    // precheck -> false, (2) the hit's avatar read -> true + avatar.
+    vi.mocked(invite.getHubStatus)
+      .mockResolvedValueOnce({ isHuman: false, avatar: ZERO } as never) // default precheck
+      .mockResolvedValueOnce({ isHuman: true, avatar: AVATAR } as never); // hit avatar read
+    vi.mocked(findRegisteredSafe).mockResolvedValue({
+      safeAddress: REGISTERED,
+      owners: [CONNECTED, OTHER],
+    } as never);
+
+    const { stages, onProgress } = makeSink();
+    const out = await onboardSafeToCircles(
+      {
+        owners: [CONNECTED],
+        candidateSets: [[CONNECTED], [CONNECTED, OTHER]] as `0x${string}`[][],
+      },
+      onProgress,
+    );
+
+    expect(out.ok).toBe(true);
+    if (out.ok) {
+      expect(out.alreadyRegistered).toBe(true);
+      expect(out.safeAddress).toBe(REGISTERED);
+      expect(out.avatar).toBe(AVATAR);
+      expect(out.txHashes).toEqual([]);
+      // owners reflects the MATCHED candidate, not the attempted default set.
+      expect(out.owners).toEqual([CONNECTED, OTHER]);
+    }
+
+    // Read-only: nothing past the short-circuit ran.
+    expect(stages).toEqual(["predicting"]);
+    expect(invite.preflightInvite).not.toHaveBeenCalled();
+    expect(safeMod.deployUserSafe).not.toHaveBeenCalled();
+    expect(invite.inviteSafe).not.toHaveBeenCalled();
+  });
+
+  it("avatar read after a candidate hit throws → still alreadyRegistered (no server_error)", async () => {
+    // The candidate is confirmed human by findRegisteredSafe; the SECOND
+    // getHubStatus (avatar only) throws. An already-registered user must NOT be
+    // told onboarding failed — we default the cosmetic avatar and short-circuit.
+    vi.mocked(invite.getHubStatus)
+      .mockResolvedValueOnce({ isHuman: false, avatar: ZERO } as never) // default precheck
+      .mockRejectedValueOnce(new Error("rpc throttled")); // hit avatar read throws
+    vi.mocked(findRegisteredSafe).mockResolvedValue({
+      safeAddress: REGISTERED,
+      owners: [CONNECTED, OTHER],
+    } as never);
+
+    const { stages, onProgress } = makeSink();
+    const out = await onboardSafeToCircles(
+      {
+        owners: [CONNECTED],
+        candidateSets: [[CONNECTED], [CONNECTED, OTHER]] as `0x${string}`[][],
+      },
+      onProgress,
+    );
+
+    expect(out.ok).toBe(true);
+    if (out.ok) {
+      expect(out.alreadyRegistered).toBe(true);
+      expect(out.safeAddress).toBe(REGISTERED);
+      expect(out.avatar).toBe(ZERO); // defaulted to zeroAddress, cosmetic
+      expect(out.txHashes).toEqual([]);
+    }
+    expect(stages).toEqual(["predicting"]);
+    expect(safeMod.deployUserSafe).not.toHaveBeenCalled();
+    expect(invite.inviteSafe).not.toHaveBeenCalled();
+  });
+
+  it("default fast path wins — findRegisteredSafe is never called", async () => {
+    // The default set's Safe is already human, so the line-78 short-circuit fires
+    // BEFORE the D8 block; the candidate enumeration must be skipped entirely.
+    vi.mocked(invite.getHubStatus).mockResolvedValue({
+      isHuman: true,
+      avatar: AVATAR,
+    } as never);
+
+    const { stages, onProgress } = makeSink();
+    const out = await onboardSafeToCircles(
+      {
+        owners: [CONNECTED],
+        candidateSets: [[CONNECTED], [CONNECTED, OTHER]] as `0x${string}`[][],
+      },
+      onProgress,
+    );
+
+    expect(out.ok).toBe(true);
+    if (out.ok) {
+      expect(out.alreadyRegistered).toBe(true);
+      expect(out.safeAddress).toBe(SAFE);
+    }
+    expect(stages).toEqual(["predicting"]);
+    expect(findRegisteredSafe).not.toHaveBeenCalled();
+  });
+
+  it("no candidate hit -> proceeds through the full deploy + invite path", async () => {
+    // Default not human, findRegisteredSafe -> null: the D8 block is a no-op and
+    // the normal sequence runs. Flip to human only on the poll.
+    vi.mocked(findRegisteredSafe).mockResolvedValue(null);
+    vi.mocked(invite.getHubStatus)
+      .mockResolvedValueOnce({ isHuman: false, avatar: ZERO } as never) // default precheck
+      .mockResolvedValueOnce({ isHuman: true, avatar: AVATAR } as never) // poll #1
+      .mockResolvedValue({ isHuman: true, avatar: AVATAR } as never); // final
+
+    const { stages, onProgress } = makeSink();
+    const out = await onboardSafeToCircles(
+      {
+        owners: [CONNECTED],
+        candidateSets: [[CONNECTED], [CONNECTED, OTHER]] as `0x${string}`[][],
+      },
+      onProgress,
+    );
+
+    expect(out.ok).toBe(true);
+    if (out.ok) {
+      expect(out.alreadyRegistered).toBe(false);
+      expect(out.safeAddress).toBe(SAFE);
+      expect(out.txHashes).toEqual(INVITE_HASHES);
+    }
+    expect(stages).toEqual([
+      "predicting",
+      "preflight",
+      "deploying",
+      "verifying",
+      "inviting",
+      "registering",
+    ]);
+    expect(safeMod.deployUserSafe).toHaveBeenCalled();
+    expect(invite.inviteSafe).toHaveBeenCalled();
   });
 });

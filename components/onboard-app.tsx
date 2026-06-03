@@ -6,6 +6,8 @@ import { env } from "@/lib/env";
 import { useMiniappSdk } from "@/hooks/use-miniapp-sdk";
 import { parseSseFrames } from "@/lib/sse";
 import type {
+  AccountStatus,
+  AccountStatusFound,
   DebugMeResponse,
   NameInfo,
   OnboardResponse,
@@ -18,7 +20,7 @@ import type {
 } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-type Phase = "idle" | "connecting" | "submitting" | "done" | "error";
+type Phase = "idle" | "connecting" | "submitting" | "done" | "error" | "manage";
 
 type ProfilePhase =
   | "idle"
@@ -95,6 +97,17 @@ export function OnboardApp() {
   const [phase, setPhase] = useState<Phase>("idle");
   const [result, setResult] = useState<OnboardResponse | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  // Returning-user detection (issue #6, D9). A registered user lands on the
+  // `manage` phase; `account` carries the on-chain facts that drive its
+  // Set-profile sub-block. Detection is automatic, non-blocking, and fail-open.
+  const [account, setAccount] = useState<AccountStatusFound | null>(null);
+  // Mirror of `phase` so the one-shot detect effect can read the latest value
+  // without depending on `phase` (which would re-run / re-trigger the wallet).
+  const phaseRef = useRef<Phase>("idle");
+  phaseRef.current = phase;
+  // Ensures auto-detect runs at most once per mount.
+  const detectedRef = useRef(false);
 
   // Signer picker: the fid's verified addresses, each toggleable. The connected
   // wallet is always an owner and is not in this list.
@@ -177,6 +190,68 @@ export function OnboardApp() {
       cancelled = true;
     };
   }, [sdk.token, verifiedLoaded]);
+
+  // Returning-user auto-detect (issue #6, D9). Runs once on load as soon as the
+  // host, wallet provider, and Quick Auth token are ready. NON-BLOCKING: the
+  // Create screen renders immediately while this resolves in the background, and
+  // FAIL-OPEN (D4): any error or `found:false` leaves us on Create with nothing
+  // shown. We only swap to `manage` when the user hasn't started onboarding.
+  //
+  // The in-host guard (`sdk.inHost`) is critical: `eth_requestAccounts` is
+  // silent inside the Farcaster host but PROMPTS (or throws) in a plain browser.
+  useEffect(() => {
+    if (detectedRef.current) return;
+    if (!(sdk.ready && sdk.inHost && sdk.provider && sdk.token)) return;
+    detectedRef.current = true; // run at most once
+    const provider = sdk.provider;
+    const token = sdk.token;
+    let cancelled = false;
+
+    (async () => {
+      try {
+        // Silent in-host: this does not prompt inside the Farcaster host.
+        const accounts = (await provider.request({
+          method: "eth_requestAccounts",
+        })) as string[];
+        const connectedAddress = accounts?.[0];
+        if (!connectedAddress) return;
+        if (!cancelled) setLastConnectedAddress(connectedAddress);
+
+        const res = await fetch("/api/account-status", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            authorization: "Bearer " + token,
+          },
+          body: JSON.stringify({ connectedAddress }),
+        });
+        if (cancelled || !res.ok) return;
+        const data = (await res.json()) as AccountStatus;
+        if (cancelled || !data.found) return;
+
+        // Only swap if the user hasn't already started onboarding manually — a
+        // tap on "Create" before detection resolves wins (phaseRef mirrors the
+        // latest phase so we read it without re-running this effect).
+        if (phaseRef.current !== "idle") return;
+        setAccount(data);
+        setResult({
+          safeAddress: data.safeAddress,
+          isHuman: true,
+          avatar: "",
+          modules: { invitation: true, erc4337: true },
+          txHashes: [],
+          alreadyRegistered: true,
+        });
+        setPhase("manage");
+      } catch {
+        // Fail-open (D4): any error → stay on Create.
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [sdk.ready, sdk.inHost, sdk.provider, sdk.token]);
 
   // Elapsed timer while the account is being created (presentation only).
   // The start time lives in a ref (set in handleOnboard) so the count stays
@@ -459,6 +534,22 @@ export function OnboardApp() {
 
   const certified = !!(result?.alreadyRegistered || result?.isHuman);
 
+  // Returning-user (manage) Set-profile branching (issue #6, D5). All the logic
+  // lives in these flags so the JSX stays a set of simple ternaries and
+  // `handleSetProfile` stays dumb. Manage never offers "Update" (out of scope).
+  const isManage = phase === "manage";
+  // Only offer Set when we KNOW the profile is unset, the connected wallet is
+  // still an on-chain owner (so the relayed signature would be valid), and we
+  // actually have a name + wallet to write with (canSetProfile) — otherwise the
+  // CTA would be a dead button.
+  const manageCanSet =
+    isManage &&
+    account?.profileSet === false &&
+    account?.ownerMatch !== false &&
+    canSetProfile;
+  const manageAlreadySet = isManage && account?.profileSet === true;
+  const manageOwnerMismatch = isManage && account?.ownerMatch === false;
+
   return (
     <main className="edition flex min-h-svh w-full justify-center px-4 py-6">
       <span className="grain" aria-hidden />
@@ -520,8 +611,8 @@ export function OnboardApp() {
           </NoticeBlock>
         ) : null}
 
-        {phase === "done" && result ? (
-          /* ── The front-page win ─────────────────────────────────── */
+        {(phase === "done" || phase === "manage") && result ? (
+          /* ── The front-page win (also the returning-user Manage state) ── */
           <section className="flex flex-col gap-6">
             <div className="relative mx-auto grid h-28 w-28 place-items-center">
               <span
@@ -543,7 +634,9 @@ export function OnboardApp() {
               className="rise text-center"
               style={{ animationDelay: "120ms" }}
             >
-              <h2 className="display text-6xl uppercase">You’re in.</h2>
+              <h2 className="display text-6xl uppercase">
+                {isManage ? "Welcome back." : "You’re in."}
+              </h2>
               <p className="mt-2 text-[15px] text-[var(--ink-soft)]">
                 {doneStatus}
               </p>
@@ -603,8 +696,17 @@ export function OnboardApp() {
               </button>
             </div>
 
-            {/* Personalize: name + photo onto the Circles account (optional) */}
-            {canSetProfile ? (
+            {/* Personalize: name + photo onto the Circles account.
+                done: optional follow-up, gated by canSetProfile.
+                manage (issue #6, D5): driven by the on-chain account facts —
+                Set ONLY when the profile is known-unset and the connected wallet
+                is still an owner; "already set" / owner-mismatch info otherwise;
+                hidden when profileSet is null (can't confirm). Never "Update". */}
+            {(!isManage && canSetProfile) ||
+            manageCanSet ||
+            manageAlreadySet ||
+            manageOwnerMismatch ||
+            profilePhase === "done" ? (
               <div className="rise" style={{ animationDelay: "320ms" }}>
                 {profilePhase === "done" ? (
                   <div className="panel-pop relative bg-[var(--paper-2)] p-4">
@@ -630,7 +732,7 @@ export function OnboardApp() {
                       </a>
                     ) : null}
                   </div>
-                ) : profilePhase === "alreadySet" ? (
+                ) : profilePhase === "alreadySet" || manageAlreadySet ? (
                   <div className="panel-pop bg-[var(--paper-2)] p-4">
                     <span className="kicker text-[var(--ink-soft)]">
                       Circles profile
@@ -639,6 +741,15 @@ export function OnboardApp() {
                       Your Circles profile is already set.
                     </p>
                   </div>
+                ) : manageOwnerMismatch ? (
+                  <NoticeBlock
+                    tone="cobalt"
+                    label="Manage in the Gnosis app"
+                    delay="320ms"
+                  >
+                    This Circles account exists, but your connected wallet isn’t
+                    one of its signers. Open it in the Gnosis app to manage it.
+                  </NoticeBlock>
                 ) : (
                   <>
                     <button

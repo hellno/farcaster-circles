@@ -13,6 +13,8 @@ vi.mock("@/lib/circles/profile", () => ({
   buildCirclesProfile: vi.fn(),
   uploadProfile: vi.fn(),
   cidV0ToDigest: vi.fn(),
+  digestToCidV0: vi.fn(),
+  fetchSavedProfile: vi.fn(),
   prepareProfileTx: vi.fn(),
   relayProfileTx: vi.fn(),
 }));
@@ -27,6 +29,8 @@ import {
   buildCirclesProfile,
   uploadProfile,
   cidV0ToDigest,
+  digestToCidV0,
+  fetchSavedProfile,
   prepareProfileTx,
   relayProfileTx,
 } from "@/lib/circles/profile";
@@ -72,6 +76,8 @@ beforeEach(() => {
   });
   vi.mocked(uploadProfile).mockResolvedValue("Qmcid");
   vi.mocked(cidV0ToDigest).mockReturnValue(DIGEST as `0x${string}`);
+  vi.mocked(digestToCidV0).mockReturnValue(DIGEST as `0x${string}`);
+  vi.mocked(fetchSavedProfile).mockResolvedValue(null);
   vi.mocked(prepareProfileTx).mockResolvedValue(TYPED_DATA);
   vi.mocked(relayProfileTx).mockResolvedValue(TX_HASH as `0x${string}`);
 });
@@ -150,6 +156,7 @@ describe("profile route — prepare", () => {
       alreadySet: false,
       name: "Alice",
       hasImage: true,
+      hasBio: false,
       digest: DIGEST,
       typedData: TYPED_DATA,
     });
@@ -163,6 +170,140 @@ describe("profile route — prepare", () => {
     expect(res.status).toBe(502);
     expect((await res.json()).error).toBe("upload_failed");
     expect(prepareProfileTx).not.toHaveBeenCalled();
+  });
+});
+
+describe("profile route — prepare (overwrite / edit)", () => {
+  it("overwrite, changed: builds typed data from name + bio overrides", async () => {
+    // isDigestSet would short-circuit the legacy path — assert overwrite skips it.
+    vi.mocked(isDigestSet).mockReturnValue(true);
+    // current on-chain digest differs from the rebuilt one (cidV0ToDigest → DIGEST).
+    vi.mocked(readMetadataDigest).mockResolvedValue(ZERO as `0x${string}`);
+    vi.mocked(buildCirclesProfile).mockResolvedValue({
+      name: "Bob",
+      description: "new bio",
+      previewImageUrl: "data:image/jpeg;base64,AAA",
+    });
+
+    const res = await POST(
+      post({
+        step: "prepare",
+        safeAddress: SAFE,
+        name: "Bob",
+        description: "new bio",
+        overwrite: true,
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      alreadySet: false,
+      name: "Bob",
+      description: "new bio",
+      hasImage: true,
+      hasBio: true,
+      digest: DIGEST,
+      typedData: TYPED_DATA,
+    });
+    expect(buildCirclesProfile).toHaveBeenCalledWith(expect.anything(), {
+      name: "Bob",
+      description: "new bio",
+    });
+    expect(prepareProfileTx).toHaveBeenCalledWith(SAFE, DIGEST);
+  });
+
+  it("overwrite, unchanged: returns { noChange: true } without preparing/relaying (D6)", async () => {
+    // The rebuilt digest equals the current on-chain digest.
+    vi.mocked(readMetadataDigest).mockResolvedValue(DIGEST as `0x${string}`);
+    vi.mocked(cidV0ToDigest).mockReturnValue(DIGEST as `0x${string}`);
+
+    const res = await POST(
+      post({
+        step: "prepare",
+        safeAddress: SAFE,
+        name: "Alice",
+        overwrite: true,
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ noChange: true });
+    // upload happens BEFORE the compare; the signature steps are skipped.
+    expect(uploadProfile).toHaveBeenCalledTimes(1);
+    expect(prepareProfileTx).not.toHaveBeenCalled();
+    expect(relayProfileTx).not.toHaveBeenCalled();
+  });
+
+  it("overwrite, no usable name: 422 no_profile", async () => {
+    vi.mocked(buildCirclesProfile).mockResolvedValue(null);
+    const res = await POST(
+      post({ step: "prepare", safeAddress: SAFE, overwrite: true }),
+    );
+    expect(res.status).toBe(422);
+    expect((await res.json()).error).toBe("no_profile");
+    expect(uploadProfile).not.toHaveBeenCalled();
+    expect(prepareProfileTx).not.toHaveBeenCalled();
+  });
+
+  it("overwrite, name falls back to the Farcaster name: 200 (not 422)", async () => {
+    // No name in the body — builder derives it from the card's Farcaster name.
+    vi.mocked(buildCirclesProfile).mockResolvedValue({
+      name: "Alice",
+      previewImageUrl: "data:image/jpeg;base64,AAA",
+    });
+    const res = await POST(
+      post({ step: "prepare", safeAddress: SAFE, overwrite: true }),
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.alreadySet).toBe(false);
+    expect(body.name).toBe("Alice");
+  });
+
+  it("overwrite, oversized bio within zod max: clamped by the builder, not rejected (no 400)", async () => {
+    const longBio = "x".repeat(8000);
+    vi.mocked(buildCirclesProfile).mockResolvedValue({
+      name: "Alice",
+      description: "x".repeat(256), // builder clamp (unit-tested in T2)
+      previewImageUrl: "data:image/jpeg;base64,AAA",
+    });
+    const res = await POST(
+      post({
+        step: "prepare",
+        safeAddress: SAFE,
+        overwrite: true,
+        description: longBio,
+      }),
+    );
+    expect(res.status).not.toBe(400);
+    expect(res.status).toBe(200);
+  });
+});
+
+describe("profile route — current", () => {
+  it("returns the saved profile", async () => {
+    vi.mocked(fetchSavedProfile).mockResolvedValue({
+      name: "Saved",
+      description: "saved bio",
+    });
+
+    const res = await POST(post({ step: "current", safeAddress: SAFE }));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      name: "Saved",
+      description: "saved bio",
+    });
+  });
+
+  it("returns nulls when nothing is saved", async () => {
+    vi.mocked(fetchSavedProfile).mockResolvedValue(null);
+
+    const res = await POST(post({ step: "current", safeAddress: SAFE }));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      name: null,
+      description: null,
+    });
   });
 });
 

@@ -24,6 +24,7 @@ app/
   layout.tsx                   <head> metadata + fc:miniapp embed + fonts
   api/
     onboard/route.ts           POST: the onboard flow, streamed as SSE (auth -> deploy -> invite)
+    account-status/route.ts    POST: returning-user detector (auth, read-only, fail-open)
     verified-addresses/route.ts GET: the caller's verified eth addresses (signer picker)
     names/route.ts             POST: ENS / basename reverse resolution (cosmetic)
     debug/me/route.ts          GET: token + profile + gate verdict (dev only, no spend)
@@ -38,6 +39,7 @@ lib/
     safe.ts                    predict / deploy / assert the user's Safe (deterministic address)
     invite.ts                  the invite farm: preflight, ensureInviterSetup, the atomic claim+transfer
     onboard-safe.ts            REUSABLE chain core: sequences safe+invite, emits progress; no Farcaster
+    account-status.ts          PURE CHAIN: findRegisteredSafe(candidates) + positive-only humanCache; no Farcaster
   farcaster/
     auth.ts                    verifyQuickAuth: Bearer JWT -> { fid }
     neynar.ts                  verified addresses + profile via Neynar
@@ -45,6 +47,7 @@ lib/
     gating-policy.ts           turns signals + ONBOARD_GATE into allow/block
   onboarding/
     onboard-account.ts         thin Farcaster wrapper: auth/gate/owners, then calls onboard-safe
+    detect-account.ts          fid layer: builds candidate owner sets, runs findRegisteredSafe, reads profile/owner status
   types.ts                     shared API + domain types
 public/.well-known/farcaster.json   the signed mini app manifest (per prod domain)
 ```
@@ -105,6 +108,118 @@ and cannot drift. A faulty consumer can't stall the chain — the core try/catch
 guards every `onProgress` call, and the route keeps the on-chain work running
 even if the client disconnects (it just stops enqueuing).
 
+## Returning-user detection
+
+A user who already has a registered Circles Safe should land on a **Manage**
+screen, not the "Create my account" CTA — with no gas and no quota spent for the
+detection. There is no fid → Safe index (the design is deliberately stateless),
+so detection re-derives the Safe address from the user's owners and asks the
+chain whether it's already a human.
+
+**Why this isn't "just predict once."** The deployed Safe address is
+deterministic for a given owner set, but the *owner set drifts between sessions*:
+the default set is `[connectedAddress, ...recommended]`, where `recommended` is
+the fid's verified addresses that resolve to an ENS/basename **at request time**.
+Name resolution can flip, the verified set can change, and the user may have
+hand-toggled signers at onboard. A single re-prediction → a different address →
+`isHuman: false` → a returning user wrongly told "Create." So detection
+enumerates a bounded set of realistic owner shapes and lets the chain pick the
+one that's actually registered.
+
+```
+DETECTION and the D8 onboard short-circuit share ONE pure-chain primitive
+═════════════════════════════════════════════════════════════════════════
+
+  fid (Quick Auth)        connectedAddress (eth_requestAccounts, silent in-host)
+       │                            │
+       ▼  [lib/onboarding/detect-account.ts]
+  buildCandidateOwnerSets(connected, verified, recommended):  (PURE)
+     C1 = connected + recommended      ← default, the common case
+     C2 = connected only               ← drift: names dropped
+     C3 = connected + all verified      ← drift: extra verified added
+     (deduped; C3 skipped when verified set > MAX_VERIFIED_FANOUT = 10)
+       │
+       ▼  [lib/circles/account-status.ts]  ── PURE CHAIN, no Farcaster imports ──
+  findRegisteredSafe(candidates): predict → isHuman, STOP at first hit
+       │            (early-exit: C1 hit = 1 predict + 1 read; a cached
+       │             positive skips the read entirely)
+       ├─ hit  → { safeAddress }
+       └─ none → null
+
+  DETECTION adds, on a hit:
+     digest read  → profileSet (boolean | null on read failure)
+     owner-check  → ownerMatch (is the connected wallet still an on-chain owner?)
+  ONBOARD (D8) calls the SAME findRegisteredSafe BEFORE deploy/spend →
+     short-circuits on ANY already-registered candidate, not just the default set.
+```
+
+**One primitive, two callers.** `findRegisteredSafe(candidates, cache?)` in
+`lib/circles/account-status.ts` is the only thing that turns owner sets into a
+verdict. It walks the candidates sequentially, predicts each Safe, and returns
+the first that `Hub.isHuman`; errors from the chain layer propagate (the caller
+decides whether to fail-open). It is **pure chain** and carries no
+`server-only`, exactly like `invite.ts`/`config.ts`, so the same code is reusable
+from the `scripts/` tsx helpers.
+
+The two callers:
+
+- **`detect-account.ts`** (`detectAccount(fid, connectedAddress)`) is the fid
+  layer: it fetches the verified set, resolves names, builds the C1/C2/C3
+  candidates, runs `findRegisteredSafe`, and — on a hit — reads the Safe's
+  metadata digest for `profileSet` and checks the connected wallet against the
+  Safe's on-chain owners for `ownerMatch`. It returns the `AccountStatus` union
+  (`{ found: true; safeAddress; profileSet; ownerMatch } | { found: false }`).
+- **`onboard-safe.ts`** (D8) calls `findRegisteredSafe` over the same candidate
+  sets *before* any preflight/deploy/quota spend. Before D8 the core short-
+  circuited only on the **default** owner set's Safe, so a returning user whose
+  current signer selection differed would deploy a SECOND Safe and burn a quota
+  unit. With D8 the read-only check covers every realistic candidate, closing the
+  duplicate-Safe / quota-burn hole while preserving the cost ordering (reads
+  before any spend). `onboard-account.ts` builds the candidate sets once and hands
+  the same list to the core.
+
+**Fail-open route contract.** `POST /api/account-status` is Quick Auth'd, takes a
+zod-validated `{ connectedAddress }` body (same address regex as onboard), and
+returns the `AccountStatus` union. Detection is a convenience and must **never**
+gate onboarding: any failure — RPC throttled, digest read throws, anything —
+logs and returns `200 { found: false }`, which lands the user on the normal
+Create flow. (D8 is what makes that fallback safe: even a missed detection can't
+produce a duplicate Safe.)
+
+**The positive-only `humanCache` knob.** `findRegisteredSafe` consults an
+injected `humanCache` before each `isHuman` read and writes to it **only on a
+`true` result**. The default impl is a module-level `Set<safeAddress>`:
+
+- **Keyed on `safeAddress`, never on fid** — the same Safe is reached from many
+  candidate owner sets, and fid keying would cache the drift.
+- **Positive-only, monotonic, no TTL** — a registered human can't un-register, so
+  a cached entry is always a confirmed human and never poison. **Negatives are
+  never cached**, so a not-yet-human Safe is re-read every time and a later
+  registration is picked up.
+- **Injected**, so tests pass a fake cache and assert positive-retained /
+  negatives-never-stored / key isolation without a `next/cache` shim.
+- `MAX_VERIFIED_FANOUT = 10` bounds the C3 "all verified" candidate: when a fid's
+  verified set exceeds the cap, C3 (and the name resolution behind C1's
+  `recommended`) is skipped entirely so the per-request predict/read fan-out can't
+  blow up; C1/C2 still cover the common cases.
+
+The dominant cost is `predict`/`Safe.init`, not the `isHuman` read, so the cache
+trims reads, not the predict cost. Upgrade path (not in v1): back the wrapper
+with `unstable_cache(readHuman, [safe], { revalidate: false })`, guarded so only
+the positive path memoizes, for a cross-instance positive cache.
+
+**Client behavior** (`components/onboard-app.tsx`). On load, once the SDK is
+ready and `sdk.isInMiniApp()` is true (the `inHost` guard — a plain browser must
+never trigger a wallet prompt), the client silently `eth_requestAccounts` and
+`POST`s to `/api/account-status` in the background. The Create screen **renders
+immediately** — detection is non-blocking; on a hit the client swaps `phase` to
+`manage`, which reuses the done-screen certificate and Gnosis links. The
+Set-profile CTA is shown **only when `profileSet === false`**; when `true`, the
+"already set" panel; when `ownerMatch === false`, an info note and **no** Set
+button (the connected wallet is no longer an owner, so it can't sign). The
+backend won't overwrite an existing digest, so Manage never offers "Update." Any
+error → stay on Create (fail-open).
+
 ## Module dependencies
 
 ```mermaid
@@ -128,6 +243,12 @@ graph TD
 The core (`onboard-safe.ts`) depends only on `circles/*` — no edge to
 `farcaster/*`. That one-way boundary is what makes it reusable from a script,
 CLI, or a different frontend; the wrapper is the only thing that knows about fids.
+
+The detection split honors the same boundary: `circles/account-status.ts` is
+chain-only (no `server-only`, script-safe like `invite.ts`) and exposes
+`findRegisteredSafe`; `detect-account.ts` is the fid layer (`server-only`) that
+builds candidate owner sets from Farcaster data. Keep Farcaster concerns out of
+`lib/circles/*`.
 
 ## Error model
 

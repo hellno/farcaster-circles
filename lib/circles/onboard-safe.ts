@@ -1,11 +1,14 @@
 import "server-only";
 
+import { zeroAddress, type Address } from "viem";
+
 import {
   assertSafeReady,
   deployUserSafe,
   normalizeOwners,
   predictUserSafe,
 } from "@/lib/circles/safe";
+import { findRegisteredSafe } from "@/lib/circles/account-status";
 import { getHubStatus, inviteSafe, preflightInvite } from "@/lib/circles/invite";
 import type {
   ChainOnboardOutcome,
@@ -32,7 +35,7 @@ function errorMessage(err: unknown): string {
  * onboard costs zero gas.
  */
 export async function onboardSafeToCircles(
-  args: { owners: string[] },
+  args: { owners: string[]; candidateSets?: Address[][] },
   onProgress?: (event: OnboardProgress) => void,
 ): Promise<ChainOnboardOutcome> {
   // Normalize FIRST for determinism: the predicted Safe address depends on the
@@ -86,6 +89,41 @@ export async function onboardSafeToCircles(
         txHashes: [],
         alreadyRegistered: true,
       };
+    }
+
+    // D8: a returning user whose current signer selection differs from the set
+    // they originally onboarded with would otherwise deploy a SECOND Safe and burn
+    // a quota unit. Before any spend, check the other realistic candidate owner
+    // sets; short-circuit on ANY already-registered Safe (not just the default).
+    // Read-only, so cost ordering is preserved. The default set was just checked
+    // above, so exclude it here to avoid a duplicate read.
+    if (args.candidateSets && args.candidateSets.length > 0) {
+      const defaultKey = (owners as Address[]).join(",");
+      const extra = args.candidateSets.filter((c) => c.join(",") !== defaultKey);
+      if (extra.length > 0) {
+        const hit = await findRegisteredSafe(extra);
+        if (hit) {
+          // The Safe is already a confirmed human; the avatar is cosmetic. A
+          // failed avatar read must NOT turn an idempotent short-circuit into a
+          // server_error (which would tell an already-registered user that
+          // onboarding failed), so default it and still return alreadyRegistered.
+          let avatar: Address = zeroAddress;
+          try {
+            ({ avatar } = await getHubStatus(hit.safeAddress));
+          } catch {
+            /* cosmetic — keep the zero default; the Safe is still registered */
+          }
+          return {
+            ok: true,
+            owners: hit.owners, // the matched candidate's set, not the attempted default
+            safeAddress: hit.safeAddress,
+            isHuman: true,
+            avatar,
+            txHashes: [],
+            alreadyRegistered: true,
+          };
+        }
+      }
     }
 
     // 3. Invite preflight (read-only) — runs BEFORE deploy so a doomed onboard

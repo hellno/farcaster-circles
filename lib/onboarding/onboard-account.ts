@@ -1,5 +1,7 @@
 import "server-only";
 
+import type { Address } from "viem";
+
 import { env } from "@/lib/env";
 import {
   fetchUserProfile,
@@ -9,6 +11,7 @@ import { getSpamSignals } from "@/lib/farcaster/gating-signals";
 import { evaluateGate, type GatePolicy } from "@/lib/farcaster/gating-policy";
 import { normalizeOwners } from "@/lib/circles/safe";
 import { onboardSafeToCircles } from "@/lib/circles/onboard-safe";
+import { MAX_VERIFIED_FANOUT } from "@/lib/onboarding/detect-account";
 import type {
   NeynarProfile,
   OnboardDebug,
@@ -75,6 +78,19 @@ export function buildDebug(
 function errorMessage(err: unknown): string {
   if (err instanceof Error) return err.message;
   return String(err);
+}
+
+/** Dedupe candidate owner sets by their normalized (sorted) membership. */
+function dedupeOwnerSets(sets: Address[][]): Address[][] {
+  const seen = new Set<string>();
+  const out: Address[][] = [];
+  for (const s of sets) {
+    const key = s.join(",");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(s);
+  }
+  return out;
 }
 
 export async function onboardAccount(
@@ -160,6 +176,25 @@ export async function onboardAccount(
     owners = normalizeOwners([connectedAddress, ...acceptedAdditionalOwners]);
     log(`owners (sorted, deduped): ${owners.join(", ")}`);
 
+    // D8: realistic candidate owner sets the user MIGHT already be registered
+    // under (name-resolution drift or a different prior signer selection). The
+    // chain core short-circuits on any already-registered candidate before
+    // spending. C1 = the set we'd deploy; C2 = connected-only; C3 = connected +
+    // all verified. Deduped (collapses when verified is empty).
+    // C3 (connected + all verified) is the heavy candidate; skip it past the
+    // shared fan-out cap so this pre-spend check stays bounded (Codex #10, the
+    // SAME bound detection uses). C1 (the set we'd deploy) + C2 (connected-only)
+    // still cover the realistic drift cases.
+    const candidateOwnerSets: Address[][] = [
+      normalizeOwners(owners),
+      normalizeOwners([connectedAddress]),
+    ];
+    if (verified.length <= MAX_VERIFIED_FANOUT) {
+      candidateOwnerSets.push(normalizeOwners([connectedAddress, ...verified]));
+    }
+    const candidateSets = dedupeOwnerSets(candidateOwnerSets);
+    log(`d8: ${candidateSets.length} candidate owner-set(s) for short-circuit`);
+
     // 3.5 Anti-spam gate (free/keyless). Runs BEFORE any deploy/quota spend so a
     // blocked user costs nothing. Default policy "off" always allows.
     const policy = env.ONBOARD_GATE;
@@ -220,7 +255,10 @@ export async function onboardAccount(
       args.onProgress?.(e); // forward to the route's SSE sink
     };
 
-    const chain = await onboardSafeToCircles({ owners }, onChainProgress);
+    const chain = await onboardSafeToCircles(
+      { owners, candidateSets },
+      onChainProgress,
+    );
 
     // Carry the core's resolved address into our debug payload (owners is already
     // known). Quota is only observed on a failure outcome. Append one summary line.

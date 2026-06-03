@@ -347,3 +347,32 @@ export type OnboardStreamEvent =
   | OnboardProgress
   | { type: "result"; result: OnboardResponse }
   | { type: "error"; error: OnboardErrorResponse };
+
+// ---------- /api/account-status (returning-user detection, issue #6) ----------
+
+/** Returning-user detection result. */
+export type AccountStatus =
+  | {
+      found: true;
+      safeAddress: string; // the registered Circles Safe
+      profileSet: boolean | null; // null = isHuman true but digest read failed (Codex #6)
+      ownerMatch: boolean; // connected wallet still an on-chain owner (Codex #7)
+    }
+  | { found: false };
+
+/** Convenience alias for the found branch (client state). */
+export type AccountStatusFound = Extract<AccountStatus, { found: true }>;
+
+/** POST /api/account-status request body. */
+export interface AccountStatusRequest {
+  connectedAddress: string; // 0x + 40 hex (same regex as onboard)
+}
+
+/** 200 success response is the AccountStatus union itself. */
+export type AccountStatusResponse = AccountStatus;
+
+/** Pre-flow error response (auth/body only; detection failures fail-open to 200 found:false). */
+export interface AccountStatusErrorResponse {
+  error: "unauthorized" | "invalid_request";
+  message: string;
+}

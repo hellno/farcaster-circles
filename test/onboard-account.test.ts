@@ -229,6 +229,47 @@ describe("onboardAccount — owner re-validation security guard", () => {
   });
 });
 
+describe("onboardAccount — D8 candidate sets wiring", () => {
+  it("hands the core a candidateSets array whose first element is the owners set", async () => {
+    const out = await onboardAccount({ ...base, additionalOwners: [VERIFIED] });
+    expect(out.ok).toBe(true);
+
+    expect(onboardSafeToCircles).toHaveBeenCalledTimes(1);
+    const callArg = vi.mocked(onboardSafeToCircles).mock.calls[0][0];
+    const owners = callArg.owners;
+    const candidateSets = callArg.candidateSets;
+
+    expect(Array.isArray(candidateSets)).toBe(true);
+    // C1 (the set we'd deploy) is always first.
+    expect(candidateSets![0]).toEqual(owners);
+    // The connected-only set is present as a distinct candidate (verified in scope).
+    const keys = candidateSets!.map((s) => s.map((a) => a.toLowerCase()).join(","));
+    expect(keys).toContain(CONNECTED.toLowerCase());
+  });
+
+  it("applies the fan-out cap on the money path: drops the all-verified C3 when over cap", async () => {
+    // 11 verified addresses (> MAX_VERIFIED_FANOUT, which is 10). The heavy
+    // all-verified candidate must NOT be enumerated before spend (the SAME bound
+    // detection uses), so no candidate may contain the whole verified set.
+    const manyVerified = Array.from(
+      { length: 11 },
+      (_, i) => "0x" + (i + 1).toString(16).padStart(40, "0"),
+    );
+    vi.mocked(neynar.fetchVerifiedEthAddresses).mockResolvedValue(
+      manyVerified as never,
+    );
+
+    await onboardAccount(base); // base has no additionalOwners → owners = [connected]
+
+    const candidateSets =
+      vi.mocked(onboardSafeToCircles).mock.calls[0][0].candidateSets!;
+    // C3 (connected + all 11 verified) is skipped → no candidate holds all of them.
+    for (const set of candidateSets) {
+      expect(set.length).toBeLessThan(manyVerified.length + 1);
+    }
+  });
+});
+
 describe("onboardAccount — progress fan-out (CQ3)", () => {
   it("forwards the core's events to onProgress AND records them in debug.steps", async () => {
     // Drive the mock to emit a couple of progress events via the onProgress arg

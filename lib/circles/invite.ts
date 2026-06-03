@@ -3,7 +3,7 @@
 // AND the tsx M1 script (scripts/spike-onboard.ts) which runs in plain Node, where
 // `server-only` throws.
 
-import { type Address, type Hash } from "viem";
+import { zeroAddress, type Address, type Hash } from "viem";
 import Safe from "@safe-global/protocol-kit";
 import type { TransactionRequest } from "@aboutcircles/sdk-types";
 
@@ -17,7 +17,16 @@ import {
   getPublicClient,
 } from "@/lib/circles/config";
 
-/** Read Hub v2 registration status for an address. */
+/**
+ * Read Hub v2 registration status for an address.
+ *
+ * `isHuman` is AUTHORITATIVE — it gates the idempotency short-circuits in
+ * `onboardSafeToCircles` and `findRegisteredSafe`. The `avatar` is cosmetic
+ * (UI only), so a failed `avatars` read must NOT throw the whole status: that
+ * would turn an already-registered check into a `server_error` for a user who is
+ * in fact registered. We best-effort the avatar to `zeroAddress`. A failed
+ * `isHuman` read still propagates (the registration state is genuinely unknown).
+ */
 export async function getHubStatus(
   addr: Address,
 ): Promise<{ isHuman: boolean; avatar: Address }> {
@@ -29,12 +38,14 @@ export async function getHubStatus(
       functionName: "isHuman",
       args: [addr],
     }),
-    client.readContract({
-      address: HUB_V2,
-      abi: HUB_ABI,
-      functionName: "avatars",
-      args: [addr],
-    }),
+    client
+      .readContract({
+        address: HUB_V2,
+        abi: HUB_ABI,
+        functionName: "avatars",
+        args: [addr],
+      })
+      .catch(() => zeroAddress),
   ]);
   return { isHuman, avatar: avatar as Address };
 }

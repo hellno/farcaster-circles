@@ -3,6 +3,7 @@ import "server-only";
 import {
   bytesToHex,
   encodeFunctionData,
+  hexToBytes,
   type Address,
   type Hash,
 } from "viem";
@@ -36,6 +37,8 @@ import type { ProfileTypedData } from "@/lib/types";
 
 /** Circles convention: profile names are short. Clamp to avoid service rejects. */
 export const MAX_PROFILE_NAME = 36;
+/** Circles profile bios are short. Clamp (do NOT reject), mirroring MAX_PROFILE_NAME. */
+export const MAX_PROFILE_DESCRIPTION = 256;
 /** Avatar thumbnail target — small enough to inline as a base64 data URI. */
 const THUMB_PX = 256;
 /** Defensive cap on the encoded thumbnail; skip the image if it exceeds this. */
@@ -69,6 +72,24 @@ export function cidV0ToDigest(cidV0: string): `0x${string}` {
   return bytesToHex(decoded.subarray(2)); // drop the multihash prefix
 }
 
+/**
+ * Encode a bare 32-byte NameRegistry digest back to its CIDv0 ("Qm…") — the
+ * inverse of cidV0ToDigest. Prepends the 0x12 0x20 sha2-256 multihash prefix and
+ * base58btc-encodes. Round-trips with cidV0ToDigest (see test). Throws on a
+ * non-32-byte digest.
+ */
+export function digestToCidV0(digest: `0x${string}`): string {
+  const body = hexToBytes(digest);
+  if (body.length !== 32) {
+    throw new Error(`expected a 32-byte digest: ${digest}`);
+  }
+  const full = new Uint8Array(34);
+  full[0] = 0x12;
+  full[1] = 0x20;
+  full.set(body, 2);
+  return base58Encode(full);
+}
+
 const BASE58_ALPHABET =
   "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 
@@ -95,6 +116,31 @@ function base58Decode(str: string): Uint8Array {
     else break;
   }
   return Uint8Array.from(bytes.reverse());
+}
+
+/** Minimal base58btc encode (Bitcoin alphabet) — inverse of base58Decode. */
+function base58Encode(bytes: Uint8Array): string {
+  const digits: number[] = [0];
+  for (const byte of bytes) {
+    let carry = byte;
+    for (let j = 0; j < digits.length; j++) {
+      carry += digits[j] << 8;
+      digits[j] = carry % 58;
+      carry = (carry / 58) | 0;
+    }
+    while (carry > 0) {
+      digits.push(carry % 58);
+      carry = (carry / 58) | 0;
+    }
+  }
+  let out = "";
+  // Each leading zero byte maps to a leading "1".
+  for (const byte of bytes) {
+    if (byte === 0) out += "1";
+    else break;
+  }
+  for (let k = digits.length - 1; k >= 0; k--) out += BASE58_ALPHABET[digits[k]];
+  return out;
 }
 
 /**
@@ -129,14 +175,27 @@ export async function makeAvatarThumbnail(
 /**
  * Build the Circles `Profile` from a Farcaster card: name (required) + an inline
  * avatar thumbnail (best-effort). Returns null when there's no usable name.
+ *
+ * Optional `overrides` let the user supply their own name/description (the edit
+ * flow): a non-empty override name wins over the card's Farcaster name, and a
+ * non-empty description is added. Both are trimmed and clamped (NOT rejected) to
+ * MAX_PROFILE_NAME / MAX_PROFILE_DESCRIPTION. Whitespace-only overrides are
+ * ignored. The no-args call is unchanged (purely additive).
  */
 export async function buildCirclesProfile(
   card: FarcasterCard | null,
+  overrides?: { name?: string; description?: string },
 ): Promise<Profile | null> {
-  const name = circlesProfileName(card);
+  const overrideName = overrides?.name?.trim();
+  const name = overrideName
+    ? overrideName.slice(0, MAX_PROFILE_NAME)
+    : circlesProfileName(card);
   if (!name) return null;
   const previewImageUrl = await makeAvatarThumbnail(card?.pfpUrl);
-  return previewImageUrl ? { name, previewImageUrl } : { name };
+  const profile: Profile = previewImageUrl ? { name, previewImageUrl } : { name };
+  const d = overrides?.description?.trim();
+  if (d) profile.description = d.slice(0, MAX_PROFILE_DESCRIPTION);
+  return profile;
 }
 
 /**
@@ -178,6 +237,32 @@ export async function readMetadataDigest(safe: Address): Promise<`0x${string}`> 
 /** True when the Safe already has a profile digest set (idempotency guard). */
 export function isDigestSet(digest: string): boolean {
   return digest.toLowerCase() !== ZERO_DIGEST;
+}
+
+/**
+ * Read a Safe's currently saved Circles profile via the profile service. Reads
+ * the on-chain digest, converts it to its CIDv0, and GETs the pinned doc
+ * (`…/get?cid=<cid>`, the read counterpart to uploadProfile's `…/pin`). Returns
+ * only the fields we prefill with. Best-effort: an unset digest OR any
+ * read/parse failure returns null (caller falls back to a Farcaster default).
+ */
+export async function fetchSavedProfile(safe: Address): Promise<Profile | null> {
+  try {
+    const digest = await readMetadataDigest(safe);
+    if (!isDigestSet(digest)) return null;
+    const cid = digestToCidV0(digest);
+    const base = getCirclesConfig().profileServiceUrl;
+    const url = `${base.endsWith("/") ? base : base + "/"}get?cid=${cid}`;
+    const res = await fetch(url, { cache: "no-store" });
+    if (!res.ok) return null;
+    const data = (await res.json()) as Partial<Profile>;
+    if (!data || typeof data.name !== "string") return null;
+    const out: Profile = { name: data.name };
+    if (typeof data.description === "string") out.description = data.description;
+    return out;
+  } catch {
+    return null;
+  }
 }
 
 /** Calldata for `NameRegistry.updateMetadataDigest(digest)`. */

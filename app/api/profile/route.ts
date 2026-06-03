@@ -8,6 +8,7 @@ import {
   buildCirclesProfile,
   cidV0ToDigest,
   circlesProfileName,
+  fetchSavedProfile,
   isDigestSet,
   prepareProfileTx,
   readMetadataDigest,
@@ -15,6 +16,7 @@ import {
   uploadProfile,
 } from "@/lib/circles/profile";
 import type {
+  ProfileCurrentResponse,
   ProfileErrorCode,
   ProfileErrorResponse,
   ProfilePrepareResponse,
@@ -39,7 +41,14 @@ const addr = z.string().regex(/^0x[0-9a-fA-F]{40}$/);
 const bytes32 = z.string().regex(/^0x[0-9a-fA-F]{64}$/);
 
 const bodySchema = z.discriminatedUnion("step", [
-  z.object({ step: z.literal("prepare"), safeAddress: addr }),
+  z.object({
+    step: z.literal("prepare"),
+    safeAddress: addr,
+    name: z.string().max(4000).optional(),
+    description: z.string().max(8000).optional(),
+    overwrite: z.boolean().optional(),
+  }),
+  z.object({ step: z.literal("current"), safeAddress: addr }),
   z.object({
     step: z.literal("relay"),
     safeAddress: addr,
@@ -64,12 +73,19 @@ function fail(code: ProfileErrorCode, message: string) {
 }
 
 /**
- * Set the caller's Circles profile (name + avatar) on a Safe they own. Two steps
- * (idempotent, failure-isolated; completely separate from /api/onboard):
+ * Set the caller's Circles profile (name + avatar + bio) on a Safe they own.
+ * Steps (idempotent, failure-isolated; completely separate from /api/onboard):
  *
- *   prepare -> verify auth, short-circuit if a digest is already set, build the
- *     profile from the fid's Farcaster identity, pin it, and return the unsigned
- *     Safe-tx EIP-712 typed data for the user to sign (gas-free).
+ *   current -> read-back: fetch the currently saved profile (best-effort) plus
+ *     the Farcaster-identity defaults so the client can prefill the edit form.
+ *   prepare -> verify auth, then:
+ *       • legacy (overwrite !== true): short-circuit if a digest is already set,
+ *         build the profile from the fid's Farcaster identity, pin it, and
+ *         return the unsigned Safe-tx typed data to sign (gas-free).
+ *       • overwrite (overwrite === true): skip the short-circuit, build from the
+ *         user-entered name/bio overrides, pin it, and — if the rebuilt digest
+ *         equals the current on-chain digest — return `{ noChange: true }`
+ *         (no signature). Otherwise return the typed data as above.
  *   relay   -> rebuild that exact tx, attach the user's owner signature, and
  *     submit execTransaction AS the operator (pays gas). A bad signature simply
  *     reverts on-chain; the operator's exposure is one NameRegistry write.
@@ -91,9 +107,66 @@ export async function POST(request: Request) {
     const body = parsed.data;
     const safe = body.safeAddress as Address;
 
+    if (body.step === "current") {
+      // Prefill the edit form with the saved profile (best-effort; null when
+      // unset or unreadable). The client fills an empty name from its Farcaster
+      // identity; bio has no default source, so it stays empty (D3).
+      const p = await fetchSavedProfile(safe);
+      return NextResponse.json<ProfileCurrentResponse>({
+        name: p?.name ?? null,
+        description: p?.description ?? null,
+      });
+    }
+
     if (body.step === "prepare") {
-      // Idempotency: never overwrite an already-set (possibly user-customized)
-      // profile, and never prompt a signature we don't need.
+      // Overwrite path (edit): rebuild from the user-entered name/bio, skip the
+      // already-set short-circuit, and no-op when nothing actually changed (D6).
+      if (body.overwrite === true) {
+        const card = await fetchFarcasterCard(auth.fid).catch(() => null);
+        const profile = await buildCirclesProfile(card, {
+          name: body.name,
+          description: body.description,
+        });
+        if (!profile) {
+          return fail(
+            "no_profile",
+            "no name to set — provide one or set a Farcaster display name",
+          );
+        }
+
+        let cid: string;
+        try {
+          cid = await uploadProfile(profile);
+        } catch (err) {
+          console.error(
+            `[profile] upload failed for fid=${auth.fid}:`,
+            errorMessage(err),
+          );
+          return fail("upload_failed", "could not save your profile right now");
+        }
+
+        const digest = cidV0ToDigest(cid);
+        const current = await readMetadataDigest(safe);
+        // No-op guard (D6): rebuilt digest already on-chain — nothing to sign.
+        if (current.toLowerCase() === digest.toLowerCase()) {
+          return NextResponse.json<ProfilePrepareResponse>({ noChange: true });
+        }
+
+        const typedData = await prepareProfileTx(safe, digest);
+        return NextResponse.json<ProfilePrepareResponse>({
+          alreadySet: false,
+          name: profile.name,
+          ...(profile.description ? { description: profile.description } : {}),
+          hasImage: Boolean(profile.previewImageUrl),
+          hasBio: Boolean(profile.description),
+          digest,
+          typedData,
+        });
+      }
+
+      // Legacy first-time path: idempotency short-circuit, never overwrite an
+      // already-set (possibly user-customized) profile, and never prompt a
+      // signature we don't need.
       const current = await readMetadataDigest(safe);
       if (isDigestSet(current)) {
         return NextResponse.json<ProfilePrepareResponse>({ alreadySet: true });
@@ -122,6 +195,7 @@ export async function POST(request: Request) {
         alreadySet: false,
         name: profile.name,
         hasImage: Boolean(profile.previewImageUrl),
+        hasBio: false,
         digest,
         typedData,
       });

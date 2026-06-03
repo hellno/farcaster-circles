@@ -122,20 +122,35 @@ export interface ProfileTypedData {
 export interface ProfilePrepareRequest {
   /** The user's Safe address (from the onboard result). */
   safeAddress: string;
+  /** Edit form: user-entered name. Builder clamps to MAX_PROFILE_NAME; empty/omitted falls back to the Farcaster-derived name. */
+  name?: string;
+  /** Edit form: user-entered bio. Builder clamps to MAX_PROFILE_DESCRIPTION; omitted/whitespace-only → no description. */
+  description?: string;
+  /** Edit intent. When true, prepare SKIPS the alreadySet short-circuit and runs the no-op (noChange) guard. */
+  overwrite?: boolean;
 }
 
-/** Profile already set on-chain — no signature needed (idempotent). */
+/** Profile already set on-chain — no signature needed (legacy first-time path only). */
 export interface ProfilePrepareAlreadySet {
   alreadySet: true;
 }
 
-/** Profile not set — client must sign `typedData` and POST it to `relay`. */
+/** Overwrite path: the rebuilt digest equals the current on-chain digest — nothing to do (D6). */
+export interface ProfilePrepareNoChange {
+  noChange: true;
+}
+
+/** Profile not set (or edited) — client must sign `typedData` and POST it to `relay`. */
 export interface ProfilePrepareNeedsSignature {
   alreadySet: false;
-  /** The Circles profile name we'll set (displayName || username, clamped). */
+  /** The Circles profile name we'll set (clamped). */
   name: string;
+  /** The Circles profile bio we'll set, if any (clamped). Omitted when empty. */
+  description?: string;
   /** Whether an avatar thumbnail was attached to the uploaded profile. */
   hasImage: boolean;
+  /** Boolean(description) — whether a bio was attached. */
+  hasBio: boolean;
   /** 0x-prefixed 32-byte metadata digest (the uploaded profile's CID). */
   digest: string;
   /** Safe-tx typed data to sign with `eth_signTypedData_v4`. */
@@ -144,7 +159,23 @@ export interface ProfilePrepareNeedsSignature {
 
 export type ProfilePrepareResponse =
   | ProfilePrepareAlreadySet
+  | ProfilePrepareNoChange
   | ProfilePrepareNeedsSignature;
+
+/** Read-back step: fetch the current saved profile to prefill the edit form (D3). */
+export interface ProfileCurrentRequest {
+  safeAddress: string;
+}
+
+/**
+ * Prefill source for the edit form: the SAVED profile only. Both null when the
+ * digest is unset OR the read failed (best-effort). The client fills an empty
+ * name from its Farcaster identity; bio has no default source, so it stays empty.
+ */
+export interface ProfileCurrentResponse {
+  name: string | null;
+  description: string | null;
+}
 
 export interface ProfileRelayRequest {
   safeAddress: string;

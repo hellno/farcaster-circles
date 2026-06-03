@@ -51,9 +51,12 @@ import {
   buildCirclesProfile,
   cidV0ToDigest,
   circlesProfileName,
+  digestToCidV0,
   encodeUpdateMetadataDigest,
+  fetchSavedProfile,
   isDigestSet,
   makeAvatarThumbnail,
+  MAX_PROFILE_DESCRIPTION,
   MAX_PROFILE_NAME,
   prepareProfileTx,
   readMetadataDigest,
@@ -119,11 +122,62 @@ describe("cidV0ToDigest", () => {
   });
 });
 
+describe("digestToCidV0", () => {
+  it("encodes a bare digest back to its real CIDv0", () => {
+    expect(digestToCidV0(CID_DIGEST)).toBe(CID);
+  });
+
+  it("round-trips with cidV0ToDigest", () => {
+    expect(digestToCidV0(cidV0ToDigest(CID))).toBe(CID);
+  });
+
+  it("throws on a non-32-byte digest", () => {
+    expect(() => digestToCidV0("0x1234" as `0x${string}`)).toThrow();
+  });
+});
+
 describe("isDigestSet", () => {
   it("is false for the zero digest, true otherwise (case-insensitive)", () => {
     expect(isDigestSet(ZERO_DIGEST)).toBe(false);
     expect(isDigestSet(CID_DIGEST)).toBe(true);
     expect(isDigestSet(CID_DIGEST.toUpperCase())).toBe(true);
+  });
+});
+
+describe("fetchSavedProfile", () => {
+  it("reads the digest, GETs `…/get?cid=<cid>`, and returns name + description", async () => {
+    h.publicClient.readContract.mockResolvedValue(CID_DIGEST);
+    const fetchSpy = vi.spyOn(global, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ name: "Alice", description: "hi" }), {
+        status: 200,
+      }),
+    );
+    const out = await fetchSavedProfile(SAFE);
+    expect(out).toEqual({ name: "Alice", description: "hi" });
+    const url = String(fetchSpy.mock.calls[0][0]);
+    expect(url).toContain("get?cid=");
+    expect(url).toContain(CID);
+  });
+
+  it("returns null and does not fetch when the digest is unset", async () => {
+    h.publicClient.readContract.mockResolvedValue(ZERO_DIGEST);
+    const fetchSpy = vi.spyOn(global, "fetch");
+    expect(await fetchSavedProfile(SAFE)).toBeNull();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("returns null on a non-ok response", async () => {
+    h.publicClient.readContract.mockResolvedValue(CID_DIGEST);
+    vi.spyOn(global, "fetch").mockResolvedValue(
+      new Response("oops", { status: 500 }),
+    );
+    expect(await fetchSavedProfile(SAFE)).toBeNull();
+  });
+
+  it("returns null when the fetch throws", async () => {
+    h.publicClient.readContract.mockResolvedValue(CID_DIGEST);
+    vi.spyOn(global, "fetch").mockRejectedValue(new Error("network"));
+    expect(await fetchSavedProfile(SAFE)).toBeNull();
   });
 });
 
@@ -194,6 +248,62 @@ describe("buildCirclesProfile", () => {
       card({ displayName: "Alice", pfpUrl: "https://cdn.example/p.png" }),
     );
     expect(p).toEqual({ name: "Alice" });
+  });
+});
+
+describe("buildCirclesProfile overrides", () => {
+  beforeEach(() => {
+    // No pfp on the test cards → makeAvatarThumbnail returns early (no fetch),
+    // but stub fetch anyway so any avatar path never hits the network.
+    vi.spyOn(global, "fetch").mockResolvedValue(
+      new Response(new Uint8Array([1, 2, 3]), { status: 200 }),
+    );
+  });
+
+  it("lets an override name win over the card's Farcaster name", async () => {
+    const p = await buildCirclesProfile(card({ displayName: "Alice" }), {
+      name: "Bob",
+    });
+    expect(p?.name).toBe("Bob");
+  });
+
+  it("sets a non-empty description", async () => {
+    const p = await buildCirclesProfile(card({ displayName: "Alice" }), {
+      description: "hello world",
+    });
+    expect(p?.description).toBe("hello world");
+  });
+
+  it("clamps an over-long description to MAX_PROFILE_DESCRIPTION", async () => {
+    const long = "x".repeat(MAX_PROFILE_DESCRIPTION + 50);
+    const p = await buildCirclesProfile(card({ displayName: "Alice" }), {
+      description: long,
+    });
+    expect(p?.description).toHaveLength(MAX_PROFILE_DESCRIPTION);
+  });
+
+  it("omits the description key when it is whitespace-only", async () => {
+    const p = await buildCirclesProfile(card({ displayName: "Alice" }), {
+      description: "   ",
+    });
+    expect(p).not.toHaveProperty("description");
+  });
+
+  it("returns null when the override name is empty and the card has no name", async () => {
+    expect(await buildCirclesProfile(card({}), { name: "" })).toBeNull();
+  });
+
+  it("builds from the override name even with no usable card name", async () => {
+    expect((await buildCirclesProfile(card({}), { name: "Bob" }))?.name).toBe(
+      "Bob",
+    );
+    expect((await buildCirclesProfile(null, { name: "Bob" }))?.name).toBe("Bob");
+  });
+
+  it("clamps an over-long override name to MAX_PROFILE_NAME", async () => {
+    const long = "x".repeat(MAX_PROFILE_NAME + 20);
+    const p = await buildCirclesProfile(card({}), { name: long });
+    expect(p?.name).toHaveLength(MAX_PROFILE_NAME);
   });
 });
 

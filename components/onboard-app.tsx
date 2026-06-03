@@ -13,6 +13,7 @@ import type {
   OnboardResponse,
   OnboardStage,
   OnboardStreamEvent,
+  ProfileCurrentResponse,
   ProfileErrorResponse,
   ProfilePrepareResponse,
   ProfileRelayResponse,
@@ -24,6 +25,7 @@ type Phase = "idle" | "connecting" | "submitting" | "done" | "error" | "manage";
 
 type ProfilePhase =
   | "idle"
+  | "editing"
   | "preparing"
   | "signing"
   | "relaying"
@@ -128,6 +130,18 @@ export function OnboardApp() {
   const [profilePhase, setProfilePhase] = useState<ProfilePhase>("idle");
   const [profileMsg, setProfileMsg] = useState<string | null>(null);
   const [profileTxHash, setProfileTxHash] = useState<string | null>(null);
+
+  // Edit-profile form state (issue #5, D3/D4). `edit*` hold the live inputs;
+  // `editBase*` are the read-back baseline used for the changed-check (D6).
+  const [editName, setEditName] = useState("");
+  const [editBio, setEditBio] = useState("");
+  const [editBaseName, setEditBaseName] = useState("");
+  const [editBaseBio, setEditBaseBio] = useState("");
+  const [editLoading, setEditLoading] = useState(false);
+  const [editReadFailed, setEditReadFailed] = useState(false);
+  // True while the save round-trip belongs to an EDIT (so the saving phases
+  // render edit progress, not the first-time "Set your Circles profile" CTA).
+  const [editFlow, setEditFlow] = useState(false);
 
   // Debug state.
   const [rawResponse, setRawResponse] = useState<unknown>(null);
@@ -457,10 +471,20 @@ export function OnboardApp() {
         return;
       }
       const prepared = prep as ProfilePrepareResponse;
-      if (prepared.alreadySet) {
+      // The first-time path never sends `overwrite`, so the server won't return
+      // `noChange` here; handle it defensively for exhaustive narrowing.
+      if ("noChange" in prepared && prepared.noChange) {
         setProfilePhase("alreadySet");
         return;
       }
+      if ("alreadySet" in prepared && prepared.alreadySet) {
+        setProfilePhase("alreadySet");
+        return;
+      }
+      const needs = prepared as Extract<
+        ProfilePrepareResponse,
+        { alreadySet: false }
+      >;
 
       // Sign with the connected owner. We captured it during onboard; re-request
       // if missing (e.g. a fresh session landing straight on the done screen).
@@ -480,7 +504,7 @@ export function OnboardApp() {
       setProfilePhase("signing");
       const signature = (await provider.request({
         method: "eth_signTypedData_v4",
-        params: [signer, JSON.stringify(prepared.typedData)],
+        params: [signer, JSON.stringify(needs.typedData)],
       })) as string;
 
       setProfilePhase("relaying");
@@ -493,7 +517,7 @@ export function OnboardApp() {
         body: JSON.stringify({
           step: "relay",
           safeAddress: result.safeAddress,
-          digest: prepared.digest,
+          digest: needs.digest,
           signerAddress: signer,
           signature,
         }),
@@ -516,6 +540,176 @@ export function OnboardApp() {
       setProfilePhase("error");
       setProfileMsg(
         err instanceof Error ? err.message : "Couldn't set your profile.",
+      );
+    }
+  }
+
+  // Open the edit form (issue #5, D3/D4) for an ALREADY-SET profile. Reads back
+  // the saved name + bio and pre-fills each field by priority: saved value →
+  // Farcaster default → empty. The pre-filled values become the baseline for the
+  // changed-check. A failed read (network/non-ok) OR a `name:null` response
+  // (which, for an already-set profile, means the READ failed — not "unset")
+  // falls back to the Farcaster defaults and shows a subtle note. Isolated from
+  // onboarding: only touches edit + profile state, never `phase`/`result`.
+  async function openEditProfile() {
+    if (!result) return;
+    setProfileMsg(null);
+    setProfileTxHash(null);
+    setEditReadFailed(false);
+    setEditFlow(true);
+    setProfilePhase("editing");
+    setEditLoading(true);
+    const fcName = sdk.user?.displayName || sdk.user?.username || "";
+    try {
+      const res = await fetch("/api/profile", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          ...(sdk.token ? { authorization: "Bearer " + sdk.token } : {}),
+        },
+        body: JSON.stringify({
+          step: "current",
+          safeAddress: result.safeAddress,
+        }),
+      });
+      const data = (await res.json()) as ProfileCurrentResponse;
+      if (!res.ok) throw new Error("read failed");
+      const readFailed = data.name === null; // already-set ⇒ null means read failed
+      // Name falls back to the Farcaster identity; bio has no default → empty.
+      const name = (data.name ?? fcName) || "";
+      const bio = data.description ?? "";
+      setEditName(name);
+      setEditBio(bio);
+      setEditBaseName(name);
+      setEditBaseBio(bio);
+      setEditReadFailed(readFailed);
+    } catch {
+      // Fall back to the Farcaster name + empty bio, with a heads-up note.
+      setEditName(fcName);
+      setEditBio("");
+      setEditBaseName(fcName);
+      setEditBaseBio("");
+      setEditReadFailed(true);
+    } finally {
+      setEditLoading(false);
+    }
+  }
+
+  // Cancel the edit and return to the "already set" summary (the Edit-profile
+  // panel) — NOT the "done" success panel, which would falsely read "Profile
+  // updated ✓". `alreadySet` restores the Edit button in both the done-screen
+  // and the #6 Manage contexts. No network.
+  function cancelEdit() {
+    setProfileMsg(null);
+    setEditFlow(false);
+    setProfilePhase("alreadySet");
+  }
+
+  // Save an edited profile (issue #5): prepare(overwrite) → noChange | sign →
+  // relay. Reuses the sign+relay block from `handleSetProfile`. On any error we
+  // return to `editing` with the entered values preserved (never clear
+  // `editName`/`editBio`). Failure-isolated: only edit + profile state.
+  async function handleSaveProfile() {
+    if (!sdk.token || !sdk.provider || !result) return;
+    const token = sdk.token;
+    const provider = sdk.provider;
+    setProfileMsg(null);
+    setProfilePhase("preparing");
+    try {
+      const prepRes = await fetch("/api/profile", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: "Bearer " + token,
+        },
+        body: JSON.stringify({
+          step: "prepare",
+          safeAddress: result.safeAddress,
+          name: editName,
+          description: editBio,
+          overwrite: true,
+        }),
+      });
+      const prep = (await prepRes.json()) as
+        | ProfilePrepareResponse
+        | ProfileErrorResponse;
+      if (!prepRes.ok) {
+        setProfilePhase("editing");
+        setProfileMsg(
+          (prep as ProfileErrorResponse).message ||
+            "Couldn't prepare your profile.",
+        );
+        return;
+      }
+      const prepared = prep as ProfilePrepareResponse;
+      if ("noChange" in prepared && prepared.noChange) {
+        setProfileMsg("Nothing changed");
+        setProfilePhase("done");
+        return;
+      }
+      if ("alreadySet" in prepared && prepared.alreadySet) {
+        // Defensive: the overwrite path shouldn't return this. Treat as done.
+        setProfilePhase("done");
+        return;
+      }
+      const needs = prepared as Extract<
+        ProfilePrepareResponse,
+        { alreadySet: false }
+      >;
+
+      // Sign with the connected owner; re-request if we don't have it yet.
+      let signer = lastConnectedAddress;
+      if (!signer) {
+        const accounts = (await provider.request({
+          method: "eth_requestAccounts",
+        })) as string[];
+        signer = accounts?.[0] ?? null;
+      }
+      if (!signer) {
+        setProfilePhase("editing");
+        setProfileMsg("Connect a wallet to sign.");
+        return;
+      }
+
+      setProfilePhase("signing");
+      const signature = (await provider.request({
+        method: "eth_signTypedData_v4",
+        params: [signer, JSON.stringify(needs.typedData)],
+      })) as string;
+
+      setProfilePhase("relaying");
+      const relayRes = await fetch("/api/profile", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: "Bearer " + token,
+        },
+        body: JSON.stringify({
+          step: "relay",
+          safeAddress: result.safeAddress,
+          digest: needs.digest,
+          signerAddress: signer,
+          signature,
+        }),
+      });
+      const relay = (await relayRes.json()) as
+        | ProfileRelayResponse
+        | ProfileErrorResponse;
+      if (!relayRes.ok) {
+        setProfilePhase("editing");
+        setProfileMsg(
+          (relay as ProfileErrorResponse).message ||
+            "Couldn't update your profile.",
+        );
+        return;
+      }
+      setProfileTxHash((relay as ProfileRelayResponse).txHash);
+      setProfilePhase("done");
+    } catch (err) {
+      // Most commonly: the user rejected the signature. Recoverable — values kept.
+      setProfilePhase("editing");
+      setProfileMsg(
+        err instanceof Error ? err.message : "Couldn't update your profile.",
       );
     }
   }
@@ -549,6 +743,12 @@ export function OnboardApp() {
     canSetProfile;
   const manageAlreadySet = isManage && account?.profileSet === true;
   const manageOwnerMismatch = isManage && account?.ownerMatch === false;
+
+  // Save gating (issue #5, D6): disabled until the trimmed name or bio differs
+  // from the read-back baseline.
+  const editUnchanged =
+    editName.trim() === editBaseName.trim() &&
+    editBio.trim() === editBaseBio.trim();
 
   return (
     <main className="edition flex min-h-svh w-full justify-center px-4 py-6">
@@ -697,49 +897,181 @@ export function OnboardApp() {
             </div>
 
             {/* Personalize: name + photo onto the Circles account.
-                done: optional follow-up, gated by canSetProfile.
+                done: success summary (set OR updated OR "Nothing changed").
+                editing (issue #5, D8): the edit form, opened from an already-set
+                  profile (done screen or #6 Manage). The saving phases of an edit
+                  (preparing/signing/relaying, gated by `editFlow`) render progress
+                  here too so they don't fall through to the first-time CTA.
                 manage (issue #6, D5): driven by the on-chain account facts —
                 Set ONLY when the profile is known-unset and the connected wallet
-                is still an owner; "already set" / owner-mismatch info otherwise;
-                hidden when profileSet is null (can't confirm). Never "Update". */}
+                is still an owner; "Edit profile" when already set; owner-mismatch
+                info otherwise; hidden when profileSet is null (can't confirm). */}
             {(!isManage && canSetProfile) ||
             manageCanSet ||
             manageAlreadySet ||
             manageOwnerMismatch ||
-            profilePhase === "done" ? (
+            profilePhase === "done" ||
+            profilePhase === "editing" ||
+            profilePhase === "alreadySet" ||
+            (profileBusy && editFlow) ? (
               <div className="rise" style={{ animationDelay: "320ms" }}>
                 {profilePhase === "done" ? (
                   <div className="panel-pop relative bg-[var(--paper-2)] p-4">
                     <span className="kicker text-[var(--ink-soft)]">
                       Circles profile
                     </span>
-                    <p className="mt-1 text-[14px] font-semibold">
-                      Profile set ✓
+                    {profileMsg === "Nothing changed" ? (
+                      <p className="mt-1 text-[14px] font-semibold">
+                        Nothing changed
+                      </p>
+                    ) : (
+                      <>
+                        <p className="mt-1 text-[14px] font-semibold">
+                          Profile updated ✓
+                        </p>
+                        <p className="mt-0.5 text-[13px] text-[var(--ink-soft)]">
+                          Your name{sdk.user?.pfpUrl ? " and photo" : ""} now show
+                          in the Circles app.
+                        </p>
+                        {profileTxHash ? (
+                          <a
+                            href={gnosisScanTx(profileTxHash)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="mono mt-1.5 inline-flex items-center gap-2 break-all text-xs underline decoration-2 underline-offset-2 hover:text-[var(--cobalt)]"
+                          >
+                            <span aria-hidden>↳</span>
+                            {shortAddr(profileTxHash)}
+                          </a>
+                        ) : null}
+                      </>
+                    )}
+                  </div>
+                ) : profilePhase === "editing" ? (
+                  <div className="panel-pop bg-[var(--paper-2)] p-4">
+                    <span className="kicker text-[var(--ink-soft)]">
+                      Circles profile
+                    </span>
+                    <p className="mt-1 text-[15px] font-semibold">
+                      Edit your Circles profile
                     </p>
-                    <p className="mt-0.5 text-[13px] text-[var(--ink-soft)]">
-                      Your name{sdk.user?.pfpUrl ? " and photo" : ""} now show in
-                      the Circles app.
-                    </p>
-                    {profileTxHash ? (
-                      <a
-                        href={gnosisScanTx(profileTxHash)}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="mono mt-1.5 inline-flex items-center gap-2 break-all text-xs underline decoration-2 underline-offset-2 hover:text-[var(--cobalt)]"
-                      >
-                        <span aria-hidden>↳</span>
-                        {shortAddr(profileTxHash)}
-                      </a>
+
+                    {/* Read-only avatar — follows the Farcaster pfp. */}
+                    <div className="mt-3 flex items-center gap-3">
+                      {sdk.user?.pfpUrl ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={sdk.user.pfpUrl}
+                          alt=""
+                          decoding="async"
+                          referrerPolicy="no-referrer"
+                          onError={(e) => {
+                            e.currentTarget.style.display = "none";
+                          }}
+                          className="h-12 w-12 flex-none rounded-full border-2 border-[var(--ink)] object-cover"
+                        />
+                      ) : null}
+                      <span className="kicker text-[var(--ink-soft)]">
+                        Photo follows your Farcaster pfp
+                      </span>
+                    </div>
+
+                    <div className="mt-3 flex flex-col gap-3">
+                      <label className="flex flex-col gap-1">
+                        <span className="kicker text-[var(--ink-soft)]">
+                          Name
+                        </span>
+                        <input
+                          type="text"
+                          value={editName}
+                          onChange={(e) => setEditName(e.target.value)}
+                          // Match MAX_PROFILE_NAME so the changed-check (D6) lines
+                          // up with the server clamp — chars past 36 are dropped on
+                          // save and would otherwise enable Save for a no-op edit.
+                          maxLength={36}
+                          disabled={editLoading}
+                          className="border-2 border-[var(--ink)] bg-[var(--paper)] px-2.5 py-2 text-[14px]"
+                        />
+                      </label>
+                      <label className="flex flex-col gap-1">
+                        <span className="kicker text-[var(--ink-soft)]">Bio</span>
+                        <textarea
+                          value={editBio}
+                          onChange={(e) => setEditBio(e.target.value)}
+                          maxLength={256}
+                          rows={3}
+                          disabled={editLoading}
+                          className="resize-none border-2 border-[var(--ink)] bg-[var(--paper)] px-2.5 py-2 text-[14px] leading-snug"
+                        />
+                      </label>
+                    </div>
+
+                    {editLoading ? (
+                      <p className="mono mt-2 text-xs text-[var(--ink-soft)]">
+                        Loading your profile…
+                      </p>
+                    ) : editReadFailed ? (
+                      <p className="mt-2 text-[12px] text-[var(--ink-soft)]">
+                        Couldn’t load your saved profile — saving will set it from
+                        your Farcaster identity.
+                      </p>
                     ) : null}
+
+                    <div className="mt-3 flex gap-2">
+                      <button
+                        type="button"
+                        onClick={handleSaveProfile}
+                        disabled={editUnchanged || editLoading}
+                        className="block-btn h-12 flex-1 bg-[var(--cobalt)] text-sm text-[var(--paper)] disabled:opacity-50"
+                      >
+                        Save changes
+                      </button>
+                      <button
+                        type="button"
+                        onClick={cancelEdit}
+                        className="block-btn h-12 flex-1 bg-[var(--paper)] text-sm text-[var(--ink)]"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+
+                    {profileMsg ? (
+                      <p className="mt-2 text-[13px] text-[var(--flame)]">
+                        {profileMsg} Tap to retry.
+                      </p>
+                    ) : null}
+                  </div>
+                ) : profileBusy && editFlow ? (
+                  /* Save round-trip from an edit: inline progress (no Set CTA). */
+                  <div className="panel-pop bg-[var(--paper-2)] p-4">
+                    <span className="kicker text-[var(--ink-soft)]">
+                      Circles profile
+                    </span>
+                    <button
+                      type="button"
+                      disabled
+                      className="block-btn mt-2 h-12 w-full bg-[var(--cobalt)] text-sm text-[var(--paper)] opacity-80"
+                    >
+                      {profilePhase === "preparing"
+                        ? "Preparing…"
+                        : profilePhase === "signing"
+                          ? "Confirm in your wallet…"
+                          : "Saving…"}
+                    </button>
                   </div>
                 ) : profilePhase === "alreadySet" || manageAlreadySet ? (
                   <div className="panel-pop bg-[var(--paper-2)] p-4">
                     <span className="kicker text-[var(--ink-soft)]">
                       Circles profile
                     </span>
-                    <p className="mt-1 text-[14px]">
-                      Your Circles profile is already set.
-                    </p>
+                    <p className="mt-1 text-[14px]">Your Circles profile is set.</p>
+                    <button
+                      type="button"
+                      onClick={openEditProfile}
+                      className="block-btn mt-3 h-12 w-full bg-[var(--cobalt)] text-sm text-[var(--paper)]"
+                    >
+                      Edit profile
+                    </button>
                   </div>
                 ) : manageOwnerMismatch ? (
                   <NoticeBlock

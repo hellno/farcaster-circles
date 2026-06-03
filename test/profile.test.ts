@@ -61,14 +61,15 @@ import {
   uploadProfile,
 } from "@/lib/circles/profile";
 
-const { TX_HASH, SAFE } = h;
+const { TX_HASH } = h;
+const SAFE = h.SAFE as `0x${string}`;
 const SIGNER = ("0x" + "c".repeat(40)) as `0x${string}`;
 const SIG = "0x" + "b".repeat(130);
 // A real Circles CIDv0 and its bare 32-byte sha2-256 digest (verified on-chain).
 const CID = "QmeSfDUEg5yc2UMSHwFgNs8wP53j8P3qugwuppiH8169E9";
 const CID_DIGEST =
-  "0xef450c518c23ba95b860a2dd4680222687048b7d7452352ba58c93f674ae1dc2";
-const ZERO_DIGEST = "0x" + "0".repeat(64);
+  "0xef450c518c23ba95b860a2dd4680222687048b7d7452352ba58c93f674ae1dc2" as `0x${string}`;
+const ZERO_DIGEST = ("0x" + "0".repeat(64)) as `0x${string}`;
 
 beforeEach(() => {
   // Clears call history only — factory implementations survive.

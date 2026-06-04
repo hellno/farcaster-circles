@@ -253,8 +253,9 @@ builds candidate owner sets from Farcaster data. Keep Farcaster concerns out of
 ## Error model
 
 `onboardAccount` returns a discriminated `OnboardOutcome` (`ok: true | false`).
-On failure it carries a stable `code` that the route maps to an HTTP status in
-`STATUS` (`app/api/onboard/route.ts`):
+On failure it carries a stable `code` that the route maps to an HTTP status via
+the `STATUS` map (`lib/onboarding/status.ts`, imported by
+`app/api/onboard/route.ts`):
 
 | code | status | meaning |
 |------|--------|---------|

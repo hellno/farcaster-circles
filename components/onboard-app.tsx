@@ -142,6 +142,10 @@ export function OnboardApp() {
   // True while the save round-trip belongs to an EDIT (so the saving phases
   // render edit progress, not the first-time "Set your Circles profile" CTA).
   const [editFlow, setEditFlow] = useState(false);
+  // Which profile-form flow is open: "set" (first-time review of the Farcaster
+  // defaults — Save is allowed as-is) or "edit" (an already-set profile — Save is
+  // gated on a change). Drives the form copy, the Save gating, and Cancel's target.
+  const [editMode, setEditMode] = useState<"set" | "edit">("edit");
 
   // Debug state.
   const [rawResponse, setRawResponse] = useState<unknown>(null);
@@ -440,107 +444,59 @@ export function OnboardApp() {
     });
   }
 
-  // Optional post-success step: write the user's Farcaster name + photo to their
-  // Circles profile. The user signs ONE gas-free EIP-712 Safe tx; the operator
-  // relays it. Fully isolated from onboarding — any failure (incl. a rejected
-  // signature) only sets `profilePhase`, never the onboard `phase`/`result`.
-  async function handleSetProfile() {
-    if (!sdk.token || !sdk.provider || !result) return;
-    const token = sdk.token;
-    const provider = sdk.provider;
+  // First-time "Set your Circles profile" (issue #3): open a review-and-edit
+  // form instead of blindly writing the Farcaster defaults, so the user sees —
+  // and can change — exactly what will be set before they sign. We optimistically
+  // prefill from the Farcaster identity, then read the on-chain profile back: if
+  // one already exists (a returning user who reached the done screen) we switch to
+  // EDIT mode with the SAVED values so we never silently clobber a customized
+  // profile. The actual write reuses handleSaveProfile. Failure-isolated: only
+  // touches edit + profile state, never the onboard `phase`/`result`.
+  async function openSetProfile() {
+    if (!result) return;
+    const fcName = sdk.user?.displayName || sdk.user?.username || "";
     setProfileMsg(null);
-    setProfilePhase("preparing");
+    setProfileTxHash(null);
+    setEditReadFailed(false);
+    setEditFlow(true);
+    setEditMode("set");
+    // Optimistic prefill so the form is populated the instant it opens.
+    setEditName(fcName);
+    setEditBio("");
+    setEditBaseName(fcName);
+    setEditBaseBio("");
+    setProfilePhase("editing");
+    setEditLoading(true);
     try {
-      const prepRes = await fetch("/api/profile", {
+      const res = await fetch("/api/profile", {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          authorization: "Bearer " + token,
-        },
-        body: JSON.stringify({ step: "prepare", safeAddress: result.safeAddress }),
-      });
-      const prep = (await prepRes.json()) as
-        | ProfilePrepareResponse
-        | ProfileErrorResponse;
-      if (!prepRes.ok) {
-        setProfilePhase("error");
-        setProfileMsg(
-          (prep as ProfileErrorResponse).message ||
-            "Couldn't prepare your profile.",
-        );
-        return;
-      }
-      const prepared = prep as ProfilePrepareResponse;
-      // The first-time path never sends `overwrite`, so the server won't return
-      // `noChange` here; handle it defensively for exhaustive narrowing.
-      if ("noChange" in prepared && prepared.noChange) {
-        setProfilePhase("alreadySet");
-        return;
-      }
-      if ("alreadySet" in prepared && prepared.alreadySet) {
-        setProfilePhase("alreadySet");
-        return;
-      }
-      const needs = prepared as Extract<
-        ProfilePrepareResponse,
-        { alreadySet: false }
-      >;
-
-      // Sign with the connected owner. We captured it during onboard; re-request
-      // if missing (e.g. a fresh session landing straight on the done screen).
-      let signer = lastConnectedAddress;
-      if (!signer) {
-        const accounts = (await provider.request({
-          method: "eth_requestAccounts",
-        })) as string[];
-        signer = accounts?.[0] ?? null;
-      }
-      if (!signer) {
-        setProfilePhase("error");
-        setProfileMsg("Connect a wallet to sign.");
-        return;
-      }
-
-      setProfilePhase("signing");
-      const signature = (await provider.request({
-        method: "eth_signTypedData_v4",
-        params: [signer, JSON.stringify(needs.typedData)],
-      })) as string;
-
-      setProfilePhase("relaying");
-      const relayRes = await fetch("/api/profile", {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          authorization: "Bearer " + token,
+          ...(sdk.token ? { authorization: "Bearer " + sdk.token } : {}),
         },
         body: JSON.stringify({
-          step: "relay",
+          step: "current",
           safeAddress: result.safeAddress,
-          digest: needs.digest,
-          signerAddress: signer,
-          signature,
         }),
       });
-      const relay = (await relayRes.json()) as
-        | ProfileRelayResponse
-        | ProfileErrorResponse;
-      if (!relayRes.ok) {
-        setProfilePhase("error");
-        setProfileMsg(
-          (relay as ProfileErrorResponse).message ||
-            "Couldn't set your profile.",
-        );
-        return;
+      const data = (await res.json()) as ProfileCurrentResponse;
+      if (!res.ok) throw new Error("read failed");
+      if (data.name !== null) {
+        // A profile already exists — review/edit the REAL saved values rather
+        // than overwriting them with the Farcaster defaults.
+        const name = data.name || fcName;
+        const bio = data.description ?? "";
+        setEditMode("edit");
+        setEditName(name);
+        setEditBio(bio);
+        setEditBaseName(name);
+        setEditBaseBio(bio);
       }
-      setProfileTxHash((relay as ProfileRelayResponse).txHash);
-      setProfilePhase("done");
-    } catch (err) {
-      // Most commonly: the user rejected the signature. Recoverable — tap again.
-      setProfilePhase("error");
-      setProfileMsg(
-        err instanceof Error ? err.message : "Couldn't set your profile.",
-      );
+      // else: unset — keep the optimistic SET-mode prefill.
+    } catch {
+      // Read failed: keep the optimistic SET-mode prefill (Farcaster defaults).
+    } finally {
+      setEditLoading(false);
     }
   }
 
@@ -557,6 +513,7 @@ export function OnboardApp() {
     setProfileTxHash(null);
     setEditReadFailed(false);
     setEditFlow(true);
+    setEditMode("edit");
     setProfilePhase("editing");
     setEditLoading(true);
     const fcName = sdk.user?.displayName || sdk.user?.username || "";
@@ -595,14 +552,15 @@ export function OnboardApp() {
     }
   }
 
-  // Cancel the edit and return to the "already set" summary (the Edit-profile
-  // panel) — NOT the "done" success panel, which would falsely read "Profile
-  // updated ✓". `alreadySet` restores the Edit button in both the done-screen
-  // and the #6 Manage contexts. No network.
+  // Cancel the form and return to wherever it was opened from. A first-time SET
+  // goes back to its CTA (`idle`); an EDIT goes back to the "already set" summary
+  // (the Edit-profile panel) — NOT the "done" success panel, which would falsely
+  // read "Profile updated ✓". `alreadySet` restores the Edit button in both the
+  // done-screen and the #6 Manage contexts. No network.
   function cancelEdit() {
     setProfileMsg(null);
     setEditFlow(false);
-    setProfilePhase("alreadySet");
+    setProfilePhase(editMode === "set" ? "idle" : "alreadySet");
   }
 
   // Save an edited profile (issue #5): prepare(overwrite) → noChange | sign →
@@ -848,11 +806,16 @@ export function OnboardApp() {
               style={{ animationDelay: "200ms" }}
             >
               <span className="kicker text-[var(--ink-soft)]">
-                Your smart wallet
+                Your Circles account lives at
               </span>
-              <code className="mono mt-1.5 block break-all text-[13px] leading-snug">
+              <a
+                href={gnosisAppProfile(result.safeAddress)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="mono mt-1.5 block break-all text-[13px] leading-snug underline decoration-2 underline-offset-2 hover:text-[var(--cobalt)]"
+              >
                 {result.safeAddress}
-              </code>
+              </a>
 
               <span className="stamp pointer-events-none absolute -top-3.5 right-3 grid place-items-center rounded-full border-[2.5px] border-[var(--cobalt)] px-3 py-2 text-center text-[var(--cobalt)]">
                 <span className="kicker leading-none">
@@ -927,7 +890,9 @@ export function OnboardApp() {
                     ) : (
                       <>
                         <p className="mt-1 text-[14px] font-semibold">
-                          Profile updated ✓
+                          {editMode === "set"
+                            ? "Profile set ✓"
+                            : "Profile updated ✓"}
                         </p>
                         <p className="mt-0.5 text-[13px] text-[var(--ink-soft)]">
                           Your name{sdk.user?.pfpUrl ? " and photo" : ""} now show
@@ -953,8 +918,16 @@ export function OnboardApp() {
                       Circles profile
                     </span>
                     <p className="mt-1 text-[15px] font-semibold">
-                      Edit your Circles profile
+                      {editMode === "set"
+                        ? "Set your Circles profile"
+                        : "Edit your Circles profile"}
                     </p>
+                    {editMode === "set" ? (
+                      <p className="mt-0.5 text-[13px] text-[var(--ink-soft)]">
+                        Here’s what we’ll add to your Circles account. Edit
+                        anything — nothing is saved until you sign.
+                      </p>
+                    ) : null}
 
                     {/* Read-only avatar — follows the Farcaster pfp. */}
                     <div className="mt-3 flex items-center gap-3">
@@ -1001,6 +974,7 @@ export function OnboardApp() {
                           maxLength={256}
                           rows={3}
                           disabled={editLoading}
+                          placeholder="Optional"
                           className="resize-none border-2 border-[var(--ink)] bg-[var(--paper)] px-2.5 py-2 text-[14px] leading-snug"
                         />
                       </label>
@@ -1021,10 +995,15 @@ export function OnboardApp() {
                       <button
                         type="button"
                         onClick={handleSaveProfile}
-                        disabled={editUnchanged || editLoading}
+                        disabled={
+                          editLoading ||
+                          (editMode === "set"
+                            ? !editName.trim()
+                            : editUnchanged)
+                        }
                         className="block-btn h-12 flex-1 bg-[var(--cobalt)] text-sm text-[var(--paper)] disabled:opacity-50"
                       >
-                        Save changes
+                        {editMode === "set" ? "Set profile" : "Save changes"}
                       </button>
                       <button
                         type="button"
@@ -1034,6 +1013,12 @@ export function OnboardApp() {
                         Cancel
                       </button>
                     </div>
+
+                    {editMode === "set" ? (
+                      <p className="kicker mt-2 text-center text-[var(--ink-soft)]">
+                        One tap to sign · Gas-free
+                      </p>
+                    ) : null}
 
                     {profileMsg ? (
                       <p className="mt-2 text-[13px] text-[var(--flame)]">
@@ -1056,7 +1041,9 @@ export function OnboardApp() {
                         ? "Preparing…"
                         : profilePhase === "signing"
                           ? "Confirm in your wallet…"
-                          : "Saving…"}
+                          : editMode === "set"
+                            ? "Setting profile…"
+                            : "Saving…"}
                     </button>
                   </div>
                 ) : profilePhase === "alreadySet" || manageAlreadySet ? (
@@ -1086,21 +1073,14 @@ export function OnboardApp() {
                   <>
                     <button
                       type="button"
-                      onClick={handleSetProfile}
-                      disabled={profileBusy}
+                      onClick={openSetProfile}
                       className="block-btn h-14 w-full bg-[var(--cobalt)] text-base text-[var(--paper)]"
                     >
-                      {profilePhase === "preparing"
-                        ? "Preparing…"
-                        : profilePhase === "signing"
-                          ? "Confirm in your wallet…"
-                          : profilePhase === "relaying"
-                            ? "Setting profile…"
-                            : "Set your Circles profile"}
+                      Set your Circles profile
                     </button>
                     <p className="kicker mt-2 text-center text-[var(--ink-soft)]">
-                      Use your Farcaster name
-                      {sdk.user?.pfpUrl ? " + photo" : ""} · One tap to sign ·
+                      Review your name
+                      {sdk.user?.pfpUrl ? " + photo" : ""} before you sign ·
                       Gas-free
                     </p>
                     {profilePhase === "error" && profileMsg ? (

@@ -235,30 +235,38 @@ async function fetchFarcasterCardFromHub(
 }
 
 /**
- * An fid's display card for the share OG image. Tries the free keyless hub
- * first (no Neynar plan needed — same hub-first pattern as
- * `fetchVerifiedEthAddresses`), then falls back to Neynar. Returns null if both
- * fail, so the caller can render a name/pfp-less fallback.
+ * An fid's display card (pfp / display name / username) for the share OG image
+ * and the Circles profile avatar.
+ *
+ * Neynar-FIRST, by design: it tracks the live network. The keyless public hub
+ * (hub.pinata.cloud) serves FROZEN snapshots, and because it answers 200 with
+ * stale data the old hub-first order silently baked a months-old pfp into both
+ * the share card and the on-chain Circles avatar (a real bug). We fall back to
+ * the hub only when Neynar is unavailable (missing key / quota / 404), where a
+ * possibly-stale card still beats none. Returns null if both fail, so the caller
+ * can render a name/pfp-less fallback.
  */
 export async function fetchFarcasterCard(
   fid: number,
 ): Promise<FarcasterCard | null> {
+  const summary = await fetchUserByFid(fid).catch(() => null);
+  if (summary) {
+    return {
+      username: summary.username,
+      displayName: summary.displayName,
+      pfpUrl: summary.pfpUrl,
+    };
+  }
   try {
     const fromHub = await fetchFarcasterCardFromHub(fid);
     if (fromHub) return fromHub;
   } catch (hubErr) {
     console.warn(
-      `[neynar] hub userData failed for fid=${fid}, falling back to Neynar:`,
+      `[neynar] hub userData fallback failed for fid=${fid}:`,
       hubErr instanceof Error ? hubErr.message : hubErr,
     );
   }
-  const summary = await fetchUserByFid(fid).catch(() => null);
-  if (!summary) return null;
-  return {
-    username: summary.username,
-    displayName: summary.displayName,
-    pfpUrl: summary.pfpUrl,
-  };
+  return null;
 }
 
 export async function fetchUserByFid(

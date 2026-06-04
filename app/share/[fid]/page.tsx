@@ -2,10 +2,23 @@ import type { Metadata } from "next";
 
 import { OnboardApp } from "@/components/onboard-app";
 import { buildMiniappEmbed } from "@/lib/farcaster/miniapp-embed";
+import { fetchFarcasterCard } from "@/lib/farcaster/neynar";
 
 export const dynamic = "force-dynamic";
 
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "";
+
+// Short, stable token derived from the pfp URL (djb2). Runtime-agnostic (no
+// crypto import) — it's only a cache key, not a security boundary. A changed pfp
+// yields a new token → a new OG image URL → a cache miss everywhere.
+function pfpVersion(pfpUrl: string | null | undefined): string {
+  if (!pfpUrl) return "0";
+  let h = 5381;
+  for (let i = 0; i < pfpUrl.length; i++) {
+    h = ((h << 5) + h + pfpUrl.charCodeAt(i)) >>> 0;
+  }
+  return h.toString(36);
+}
 
 // Per-fid share target: the URL a freshly onboarded user casts. Its embed card
 // is the dynamic per-fid OG image; tapping the card launches the app so the
@@ -18,7 +31,12 @@ export async function generateMetadata({
   const { fid } = await params;
   if (!APP_URL) return {};
 
-  const imageUrl = `${APP_URL}/api/og/${fid}`;
+  // Cache-bust the per-fid card by the CURRENT pfp. The OG route long-caches its
+  // render (and Farcaster's image proxy caches by URL), so without a version a
+  // pfp change would never surface. Best-effort: a failed lookup yields v=0 and
+  // the route still renders (it fetches the card itself).
+  const card = await fetchFarcasterCard(Number(fid)).catch(() => null);
+  const imageUrl = `${APP_URL}/api/og/${fid}?v=${pfpVersion(card?.pfpUrl)}`;
   const embed = JSON.stringify(
     buildMiniappEmbed({
       appUrl: APP_URL,

@@ -15,7 +15,8 @@ vi.mock("@/lib/onboarding/onboard-account", () => ({
   buildDebug: vi.fn(() => undefined),
 }));
 
-import { STATUS, POST } from "@/app/api/onboard/route";
+import { POST } from "@/app/api/onboard/route";
+import { STATUS } from "@/lib/onboarding/status";
 import { verifyQuickAuth } from "@/lib/farcaster/auth";
 import { onboardAccount } from "@/lib/onboarding/onboard-account";
 import { parseSseFrames } from "@/lib/sse";

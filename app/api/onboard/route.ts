@@ -8,8 +8,8 @@ import {
   buildDebug,
   type DebugState,
 } from "@/lib/onboarding/onboard-account";
+import { STATUS } from "@/lib/onboarding/status";
 import type {
-  OnboardErrorCode,
   OnboardErrorResponse,
   OnboardStreamEvent,
 } from "@/lib/types";
@@ -19,19 +19,6 @@ export const dynamic = "force-dynamic";
 // Worst case is ~deploy + the 24s registration poll. The operator can raise this
 // on Vercel Pro if a congested Gnosis block pushes a run past the cap.
 export const maxDuration = 60;
-
-export const STATUS: Record<OnboardErrorCode, number> = {
-  unauthorized: 401,
-  invalid_request: 400,
-  gated: 403,
-  no_quota: 503,
-  inviter_unavailable: 503,
-  deploy_failed: 500,
-  safe_not_ready: 500,
-  invite_failed: 500,
-  not_registered: 502,
-  server_error: 500,
-};
 
 const bodySchema = z.object({
   connectedAddress: z.string().regex(/^0x[0-9a-fA-F]{40}$/),
